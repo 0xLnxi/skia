@@ -62,12 +62,14 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Set up depot_tools
+      - name: Set up depot_tools (Clone)
         run: |
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
           echo "$GITHUB_WORKSPACE/depot_tools" >> $GITHUB_PATH
-          # Run gclient once to force it to initialize itself
-          gclient
+        shell: bash
+
+      - name: Set up depot_tools (Initialize)
+        run: gclient
         shell: bash
 
       - name: Install Linux dependencies (if applicable)
