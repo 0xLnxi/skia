@@ -83,8 +83,12 @@ jobs:
 
       - name: Configure Skia build with GN
         run: |
+          mkdir -p out/Release
+          
+          # Write all arguments directly to the args.gn file
+          # This correctly preserves newlines.
+          cat > out/Release/args.gn <<EOF
           # Common build arguments
-          GN_ARGS="
           is_official_build = true
           is_debug = false
           skia_use_freetype = true
@@ -100,24 +104,31 @@ jobs:
           skia_use_system_zlib = false
           skia_use_system_freetype2 = false
           skia_use_system_harfbuzz = false
-          target_os = \"${{ matrix.target_os }}\"
-          target_cpu = \"${{ matrix.target_cpu }}\"
+          target_os = "${{ matrix.target_os }}"
+          target_cpu = "${{ matrix.target_cpu }}"
+
+          # Platform-specific arguments from the matrix
           ${{ matrix.gn_extra_args }}
-          "
-          # On Windows, we need to specify the path to clang
+          EOF
+          
+          # On Windows, add the clang_win path
           if [ "${{ runner.os }}" = "Windows" ]; then
             CLANG_PATH_ESCAPED=$(echo 'C:/Program Files/LLVM' | sed 's/\\/\\\\/g')
-            GN_ARGS="$GN_ARGS
-            cc = \"clang\"
-            cxx = \"clang++\"
-            clang_win = \"$CLANG_PATH_ESCAPED\"
-            "
+            cat >> out/Release/args.gn <<EOF
+
+            # Windows-specific toolchain
+            cc = "clang"
+            cxx = "clang++"
+            clang_win = "$CLANG_PATH_ESCAPED"
+            EOF
           fi
-          echo "--- GN Arguments ---"
-          echo "$GN_ARGS"
-          echo "--------------------"
-          
-          gn gen out/Release --args="$GN_ARGS"
+
+          echo "--- Content of args.gn ---"
+          cat out/Release/args.gn
+          echo "--------------------------"
+
+          # Run gn gen without --args, it will automatically find args.gn
+          gn gen out/Release
         shell: bash
 
       - name: Compile Skia with Ninja
