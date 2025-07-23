@@ -123,6 +123,8 @@ jobs:
               echo "skia_enable_graphite = true"
               echo "skia_use_gl = true"
               echo "skia_use_vulkan = true"
+              # Add the target NDK API level
+              echo "ndk_api = 21"
               echo 'ndk = "/usr/local/lib/android/sdk/ndk/25.2.9519653"'
               echo 'extra_cflags_cc = [ "-std=c++20" ]'
             } >> out/Release/args.gn
