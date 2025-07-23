@@ -124,9 +124,9 @@ jobs:
               echo "skia_use_vulkan = true"
               echo "skia_use_icu = true"
               echo "skia_enable_skshaper = true"
-              echo "skia_enable_fontmgr_android = true" # This is critical
-              echo "skia_use_dng_sdk = false" # Be explicit
-              echo "skia_use_piex = false" # Be explicit
+              echo "skia_enable_fontmgr_android = true"
+              echo "skia_use_dng_sdk = false"
+              echo "skia_use_piex = false"
               echo "android_api_level = ${{ matrix.android_api }}"
               echo "ndk = \"$ANDROID_NDK_ROOT\""
               echo 'extra_cflags_cc = [ "-std=c++20" ]'
@@ -140,7 +140,9 @@ jobs:
 
       - name: Compile Skia with Ninja
         working-directory: ./skia
-        run: ninja -C out/Release -j 4
+        # Explicitly build the 'skia' and 'modules' targets 
+        # to bypass the failing //:skia.h action.
+        run: ninja -C out/Release -j 4 skia modules
 
       - name: Package SDK
         working-directory: ./skia
