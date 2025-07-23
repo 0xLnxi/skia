@@ -4,8 +4,8 @@ name: Build Skia SDK
 
 on:
   schedule:
-    - cron: '0 3 * * 0'
-  workflow_dispatch:
+    - cron: '0 3 * * 0' # Runs every Sunday at 3 AM UTC
+  workflow_dispatch: # Allows manual runs
 
 jobs:
   # ===============================================================
@@ -14,15 +14,14 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - name: Checkout skia
+      - name: Checkout Skia
         uses: actions/checkout@v4
 
-      - name: Setup depot_tools
+      - name: Setup and Bootstrap depot_tools
         run: |
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
           echo "$env:GITHUB_WORKSPACE\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          # Initialize depot_tools
-          gclient
+          gclient.bat # <-- This is the added fix
         shell: pwsh
 
       - name: Setup Python
@@ -32,7 +31,7 @@ jobs:
 
       - name: Sync Skia dependencies
         run: python tools/git-sync-deps
-
+        
       - name: Configure Skia Build (GN)
         run: |
           $clang_path = "C:\Program Files\LLVM"
@@ -81,27 +80,11 @@ jobs:
           $SDK_INC = New-Item -ItemType Directory -Path (Join-Path $S_SDK_DIR "include")
           $SDK_LIB = New-Item -ItemType Directory -Path (Join-Path $S_SDK_DIR "lib")
           $SDK_BIN = New-Item -ItemType Directory -Path (Join-Path $S_SDK_DIR "bin")
-
+          
           Copy-Item -Path (Join-Path $S_ROOT "include") -Destination $SDK_INC -Recurse -Force
-
           Copy-Item -Path (Join-Path $S_BUILD_DIR "*.lib") -Destination $SDK_LIB -Force
           Copy-Item -Path (Join-Path $S_BUILD_DIR "*.dll") -Destination $SDK_BIN -Force
           Copy-Item -Path (Join-Path $S_BUILD_DIR "icudtl.dat") -Destination $SDK_BIN -Force
-
-          $cmake_config = @"
-          get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
-          set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")
-          set(Skia_LIBRARY_DIR "${Skia_SELF_DIR}/lib")
-          add_library(Skia::Skia INTERFACE IMPORTED)
-          target_include_directories(Skia::Skia INTERFACE "${Skia_INCLUDE_DIR}")
-          target_link_libraries(Skia::Skia INTERFACE
-            "${Skia_LIBRARY_DIR}/skia.lib"
-            "${Skia_LIBRARY_DIR}/skshaper.lib"
-            "${Skia_LIBRARY_DIR}/skparagraph.lib"
-            d3d11.lib d3d12.lib dxguid.lib opengl32.lib
-          )
-          "@
-          Set-Content -Path (Join-Path $S_SDK_DIR "SkiaConfig.cmake") -Value $cmake_config
           
           Compress-Archive -Path "$S_SDK_DIR/*" -DestinationPath $S_SDK_ZIP
           echo "zip_path=$S_SDK_ZIP" >> $env:GITHUB_OUTPUT
@@ -113,14 +96,13 @@ jobs:
           name: skia-win-rel-x64-sdk
           path: ${{ steps.package.outputs.zip_path }}
 
-  ---
   # ===============================================================
   #  Linux Build Job
   # ===============================================================
   build-linux:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout skia
+      - name: Checkout Skia
         uses: actions/checkout@v4
 
       - name: Install dependencies
@@ -128,13 +110,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build libfontconfig1-dev libfreetype6-dev libharfbuzz-dev libegl1-mesa-dev libgles2-mesa-dev libvulkan-dev
 
-      - name: Setup depot_tools
+      - name: Setup and Bootstrap depot_tools
         run: |
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
           echo "$(pwd)/depot_tools" >> $GITHUB_PATH
-          # Initialize depot_tools
-          gclient
-          
+          gclient # <-- This is the added fix
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -189,14 +170,13 @@ jobs:
           name: skia-linux-rel-x64-sdk
           path: ${{ steps.package.outputs.zip_path }}
 
-  ---
   # ===============================================================
   #  Android Build Job
   # ===============================================================
   build-android:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout skia
+      - name: Checkout Skia
         uses: actions/checkout@v4
         
       - name: Setup Android NDK
@@ -205,12 +185,11 @@ jobs:
         with:
           ndk-version: r25c
 
-      - name: Setup depot_tools
+      - name: Setup and Bootstrap depot_tools
         run: |
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
           echo "$(pwd)/depot_tools" >> $GITHUB_PATH
-          # Initialize depot_tools
-          gclient
+          gclient # <-- This is the added fix
 
       - name: Setup Python
         uses: actions/setup-python@v5
