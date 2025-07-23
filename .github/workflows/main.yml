@@ -1,244 +1,231 @@
-# .github/workflows/build-skia.yml
-
 name: Build Skia SDK
 
 on:
+  # 允许手动从 Actions 页面触发
+  workflow_dispatch:
+  # 每周日凌晨 2:00 (UTC) 自动构建
   schedule:
-    - cron: '0 3 * * 0' # Runs every Sunday at 3 AM UTC
-  workflow_dispatch: # Allows manual runs
+    - cron: '0 2 * * 0'
 
 jobs:
-  # ===============================================================
-  #  Windows Build Job
-  # ===============================================================
-  build-windows:
-    runs-on: windows-latest
+  build:
+    name: Build for ${{ matrix.target_os }}-${{ matrix.target_cpu }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      # 不要因为一个任务失败就取消其他任务
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target_os: "win"
+            target_cpu: "x64"
+            artifact_name: "skia-win-rel-x64-sdk"
+            gn_extra_args: >
+              skia_enable_ganesh = false
+              skia_enable_graphite = true
+              skia_use_dawn = true
+              dawn_enable_d3d11 = true
+              dawn_enable_d3d12 = true
+              dawn_enable_vulkan = true
+              extra_cflags_c = [ "/MT" ]
+              extra_cflags_cc = [ "/MT", "/std:c++20" ]
+
+          - os: ubuntu-latest
+            target_os: "linux"
+            target_cpu: "x64"
+            artifact_name: "skia-linux-rel-x64-sdk"
+            gn_extra_args: >
+              skia_enable_ganesh = false
+              skia_enable_graphite = true
+              skia_use_gl = true
+              skia_use_vulkan = true
+              extra_cflags_cc = [ "-std=c++20" ]
+
+          - os: ubuntu-latest
+            target_os: "android"
+            target_cpu: "arm64"
+            artifact_name: "skia-android-rel-arm64-sdk"
+            gn_extra_args: >
+              skia_enable_ganesh = false
+              skia_enable_graphite = true
+              skia_use_gl = true
+              skia_use_vulkan = true
+              ndk = "/usr/local/lib/android/sdk/ndk/25.2.9519653"
+              extra_cflags_cc = [ "-std=c++20" ]
+
     steps:
-      - name: Checkout Skia
+      - name: Checkout Skia Source Code
         uses: actions/checkout@v4
 
-      - name: Setup and Bootstrap depot_tools
-        run: |
-          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-          echo "$env:GITHUB_WORKSPACE\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          gclient.bat # <-- This is the added fix
-        shell: pwsh
-
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      - name: Sync Skia dependencies
-        run: python tools/git-sync-deps
-        
-      - name: Configure Skia Build (GN)
+      - name: Set up depot_tools
         run: |
-          $clang_path = "C:\Program Files\LLVM"
-          $gn_args = @"
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          echo "$GITHUB_WORKSPACE/depot_tools" >> $GITHUB_PATH
+        shell: bash
+
+      - name: Install Linux dependencies (if applicable)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libfreetype6-dev libgl1-mesa-dev libvulkan-dev
+
+      - name: Sync Skia dependencies
+        run: python3 tools/git-sync-deps
+
+      - name: Configure Skia build with GN
+        run: |
+          # 通用构建参数
+          GN_ARGS="
           is_official_build = true
           is_debug = false
-          target_os = "win"
-          target_cpu = "x64"
-          cc = "clang"
-          cxx = "clang++"
-          clang_win = "$clang_path"
-          extra_cflags_c = [ "/MT" ]
-          extra_cflags_cc = [ "/MT", "/std:c++20" ]
-          extra_ldflags = [ "/OPT:ICF", "/OPT:REF" ]
           skia_use_freetype = true
           skia_use_harfbuzz = true
           skia_pdf_subset_harfbuzz = true
           skia_enable_skottie = true
           skia_enable_svg = true
-          skia_enable_ganesh = true
-          skia_enable_graphite = true
-          skia_use_dawn = true
-          dawn_enable_d3d11 = true
-          dawn_enable_d3d12 = true
-          dawn_enable_vulkan = true
-          skia_use_system_libs = false
-          "@
-          New-Item -ItemType Directory -Force -Path "out/Release" | Out-Null
-          Set-Content -Path "out/Release/args.gn" -Value $gn_args
-          gn gen out/Release
-        shell: pwsh
+          skia_use_system_expat = false
+          skia_use_system_icu = false
+          skia_use_system_libjpeg_turbo = false
+          skia_use_system_libpng = false
+          skia_use_system_libwebp = false
+          skia_use_system_zlib = false
+          skia_use_system_freetype2 = false
+          skia_use_system_harfbuzz = false
+          target_os = \"${{ matrix.target_os }}\"
+          target_cpu = \"${{ matrix.target_cpu }}\"
+          ${{ matrix.gn_extra_args }}
+          "
+          # 在 Windows 上，需要设置 clang_win
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # 使用 GitHub Actions 默认安装的 Clang
+            CLANG_PATH_ESCAPED=$(echo 'C:/Program Files/LLVM' | sed 's/\\/\\\\/g')
+            GN_ARGS="$GN_ARGS
+            cc = \"clang\"
+            cxx = \"clang++\"
+            clang_win = \"$CLANG_PATH_ESCAPED\"
+            "
+          fi
+          echo "--- GN Arguments ---"
+          echo "$GN_ARGS"
+          echo "--------------------"
+          
+          gn gen out/Release --args="$GN_ARGS"
+        shell: bash
 
-      - name: Compile Skia (Ninja)
-        run: ninja -C out/Release -j (Get-CimInstance Win32_Processor).NumberOfLogicalProcessors
-        shell: pwsh
+      - name: Compile Skia with Ninja
+        # 使用 -j 来利用多核处理器，值可以根据 runner 的性能进行调整
+        run: ninja -C out/Release -j 4
 
       - name: Package SDK
-        id: package
         run: |
-          $S_ROOT="."
-          $S_BUILD_DIR="out/Release"
-          $S_SDK_DIR="skia-sdk"
-          $S_SDK_ZIP="skia-win-rel-x64-sdk.zip"
+          # 创建 SDK 目录结构
+          SDK_DIR="skia-sdk"
+          mkdir -p "$SDK_DIR/include" "$SDK_DIR/lib" "$SDK_DIR/bin" "$SDK_DIR/LICENSES"
 
-          if (Test-Path $S_SDK_DIR) { Remove-Item -Recurse -Force $S_SDK_DIR }
-          $SDK_INC = New-Item -ItemType Directory -Path (Join-Path $S_SDK_DIR "include")
-          $SDK_LIB = New-Item -ItemType Directory -Path (Join-Path $S_SDK_DIR "lib")
-          $SDK_BIN = New-Item -ItemType Directory -Path (Join-Path $S_SDK_DIR "bin")
+          # 1. 收录头文件
+          echo "Copying header files..."
+          cp -r include "$SDK_DIR/"
+          cp -r modules "$SDK_DIR/include/"
+          # 复制 Dawn 头文件 (如果存在)
+          if [ -d "third_party/externals/dawn/include" ]; then
+            mkdir -p "$SDK_DIR/include/third_party/externals/dawn"
+            cp -r third_party/externals/dawn/include/* "$SDK_DIR/include/third_party/externals/dawn/"
+          fi
+          if [ -d "out/Release/gen/third_party/externals/dawn/include" ]; then
+            mkdir -p "$SDK_DIR/include/gen/third_party/externals/dawn"
+            cp -r out/Release/gen/third_party/externals/dawn/include/* "$SDK_DIR/include/gen/third_party/externals/dawn/"
+          fi
+
+          # 2. 收录库文件和二进制文件
+          echo "Copying library and binary files..."
+          # Linux/Android
+          cp out/Release/*.a "$SDK_DIR/lib/" 2>/dev/null || true
+          cp out/Release/*.so "$SDK_DIR/bin/" 2>/dev/null || true
+          # Windows
+          cp out/Release/*.lib "$SDK_DIR/lib/" 2>/dev/null || true
+          cp out/Release/*.dll "$SDK_DIR/bin/" 2>/dev/null || true
+          cp out/Release/icudtl.dat "$SDK_DIR/bin/" 2>/dev/null || true
+
+          # 3. 收录许可证文件
+          echo "Copying license files..."
+          find . -maxdepth 3 -type f \( -name "LICENSE*" -o -name "COPYING*" \) -exec bash -c 'cp "$1" "'$SDK_DIR'/LICENSES/$(basename $(dirname "$1"))-$(basename "$1")"' _ {} \;
           
-          Copy-Item -Path (Join-Path $S_ROOT "include") -Destination $SDK_INC -Recurse -Force
-          Copy-Item -Path (Join-Path $S_BUILD_DIR "*.lib") -Destination $SDK_LIB -Force
-          Copy-Item -Path (Join-Path $S_BUILD_DIR "*.dll") -Destination $SDK_BIN -Force
-          Copy-Item -Path (Join-Path $S_BUILD_DIR "icudtl.dat") -Destination $SDK_BIN -Force
-          
-          Compress-Archive -Path "$S_SDK_DIR/*" -DestinationPath $S_SDK_ZIP
-          echo "zip_path=$S_SDK_ZIP" >> $env:GITHUB_OUTPUT
-        shell: pwsh
+          # 4. 生成 CMake 配置文件
+          echo "Generating SkiaConfig.cmake..."
+          cat > "$SDK_DIR/SkiaConfig.cmake" <<EOF
+          # Skia SDK CMake config file (auto-generated by GitHub Actions)
+          get_filename_component(Skia_SELF_DIR "\${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
 
-      - name: Upload Windows SDK
-        uses: actions/upload-artifact@v4
-        with:
-          name: skia-win-rel-x64-sdk
-          path: ${{ steps.package.outputs.zip_path }}
+          set(Skia_INCLUDE_DIR "\${Skia_SELF_DIR}/include")
+          set(Skia_LIBRARY_DIR "\${Skia_SELF_DIR}/lib")
+          set(Skia_BINARY_DIR "\${Skia_SELF_DIR}/bin")
 
-  # ===============================================================
-  #  Linux Build Job
-  # ===============================================================
-  build-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Skia
-        uses: actions/checkout@v4
+          if (NOT TARGET Skia::Skia)
+              add_library(Skia::Skia INTERFACE IMPORTED)
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build libfontconfig1-dev libfreetype6-dev libharfbuzz-dev libegl1-mesa-dev libgles2-mesa-dev libvulkan-dev
+              target_include_directories(Skia::Skia INTERFACE
+                      "\${Skia_INCLUDE_DIR}"
+                      "\${Skia_INCLUDE_DIR}/third_party/externals/dawn"
+                      "\${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn"
+              )
 
-      - name: Setup and Bootstrap depot_tools
-        run: |
-          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-          echo "$(pwd)/depot_tools" >> $GITHUB_PATH
-          gclient # <-- This is the added fix
+              # Platform-specific libraries
+              if(WIN32)
+                  target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES SK_BUILD_FOR_WIN)
+                  target_link_libraries(Skia::Skia INTERFACE
+                          "\${Skia_LIBRARY_DIR}/skia.lib"
+                          "\${Skia_LIBRARY_DIR}/skcms.lib"
+                          "\${Skia_LIBRARY_DIR}/dawn_native.dll.lib"
+                          "\${Skia_LIBRARY_DIR}/dawn_proc.dll.lib"
+                          "\${Skia_LIBRARY_DIR}/dawn_platform.dll.lib"
+                          "\${Skia_LIBRARY_DIR}/freetype.lib"
+                          "\${Skia_LIBRARY_DIR}/harfbuzz.lib"
+                          d3d11.lib d3d12.lib dxguid.lib onecore.lib
+                  )
+              elseif(UNIX AND NOT ANDROID)
+                  target_link_libraries(Skia::Skia INTERFACE
+                          "\${Skia_LIBRARY_DIR}/libskia.a"
+                          "\${Skia_LIBRARY_DIR}/libskcms.a"
+                          "\${Skia_LIBRARY_DIR}/libfreetype.a"
+                          "\${Skia_LIBRARY_DIR}/libharfbuzz.a"
+                          -lfontconfig -lfreetype -lGL -ldl -lpthread
+                  )
+              elseif(ANDROID)
+                   target_link_libraries(Skia::Skia INTERFACE
+                          "\${Skia_LIBRARY_DIR}/libskia.a"
+                          "\${Skia_LIBRARY_DIR}/libskcms.a"
+                          "\${Skia_LIBRARY_DIR}/libfreetype.a"
+                          "\${Skia_LIBRARY_DIR}/libharfbuzz.a"
+                          -landroid -lEGL -lGLESv2 -ldl -llog
+                  )
+              endif()
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Sync Skia dependencies
-        run: python tools/git-sync-deps
-
-      - name: Configure Skia Build (GN)
-        run: |
-          mkdir -p out/Release
-          cat > out/Release/args.gn << EOF
-          is_official_build = true
-          is_debug = false
-          target_os = "linux"
-          target_cpu = "x64"
-          cc = "clang"
-          cxx = "clang++"
-          extra_cflags = [ "-Wno-deprecated-declarations" ]
-          skia_use_freetype = true
-          skia_use_harfbuzz = true
-          skia_enable_skottie = true
-          skia_enable_svg = true
-          skia_enable_ganesh = true
-          skia_use_gl = true
-          skia_use_egl = true
-          skia_enable_vulkan = true
-          skia_use_system_libs = false
+              # Find and link Vulkan if available
+              find_package(Vulkan QUIET)
+              if(Vulkan_FOUND)
+                  message(STATUS "Found Vulkan SDK, adding Vulkan support to Skia::Skia target.")
+                  target_link_libraries(Skia::Skia INTERFACE Vulkan::Vulkan)
+              else()
+                  message(STATUS "Vulkan SDK not found. Skipping Vulkan support for Skia.")
+              endif()
+          endif()
           EOF
-          gn gen out/Release
+        shell: bash
 
-      - name: Compile Skia (Ninja)
-        run: ninja -C out/Release -j $(nproc)
-
-      - name: Package SDK
-        id: package
+      - name: Create ZIP archive
         run: |
-          S_SDK_DIR="skia-sdk"
-          S_SDK_ZIP="skia-linux-rel-x64-sdk.zip"
-          
-          mkdir -p $S_SDK_DIR/include $S_SDK_DIR/lib
-          cp -r include/* $S_SDK_DIR/include/
-          cp out/Release/*.a $S_SDK_DIR/lib/
-          cp out/Release/*.so $S_SDK_DIR/lib/
-          
-          zip -r $S_SDK_ZIP $S_SDK_DIR
-          echo "zip_path=$S_SDK_ZIP" >> $GITHUB_OUTPUT
+          # 7-Zip is available on both Windows and Linux runners
+          7z a -tzip "${{ matrix.artifact_name }}.zip" ./skia-sdk/*
+        shell: bash
 
-      - name: Upload Linux SDK
+      - name: Upload SDK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: skia-linux-rel-x64-sdk
-          path: ${{ steps.package.outputs.zip_path }}
-
-  # ===============================================================
-  #  Android Build Job
-  # ===============================================================
-  build-android:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Skia
-        uses: actions/checkout@v4
-        
-      - name: Setup Android NDK
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: r25c
-
-      - name: Setup and Bootstrap depot_tools
-        run: |
-          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-          echo "$(pwd)/depot_tools" >> $GITHUB_PATH
-          gclient # <-- This is the added fix
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Sync Skia dependencies
-        run: python tools/git-sync-deps
-
-      - name: Configure Skia Build (GN)
-        run: |
-          mkdir -p out/Release
-          cat > out/Release/args.gn << EOF
-          is_official_build = true
-          is_debug = false
-          target_os = "android"
-          target_cpu = "arm64"
-          ndk = "${{ steps.setup-ndk.outputs.ndk-path }}"
-          skia_use_freetype = true
-          skia_use_harfbuzz = true
-          skia_enable_skottie = true
-          skia_enable_svg = true
-          skia_enable_ganesh = true
-          skia_use_gl = true
-          skia_use_egl = true
-          skia_enable_vulkan = true
-          skia_use_system_libs = false
-          EOF
-          gn gen out/Release
-
-      - name: Compile Skia (Ninja)
-        run: ninja -C out/Release -j $(nproc)
-
-      - name: Package SDK
-        id: package
-        run: |
-          S_SDK_DIR="skia-sdk"
-          S_SDK_ZIP="skia-android-rel-arm64-sdk.zip"
-
-          mkdir -p $S_SDK_DIR/include $S_SDK_DIR/lib
-          cp -r include/* $S_SDK_DIR/include/
-          find out/Release -name "*.a" -exec cp {} $S_SDK_DIR/lib/ \;
-          find out/Release -name "*.so" -exec cp {} $S_SDK_DIR/lib/ \;
-
-          zip -r $S_SDK_ZIP $S_SDK_DIR
-          echo "zip_path=$S_SDK_ZIP" >> $GITHUB_OUTPUT
-
-      - name: Upload Android SDK
-        uses: actions/upload-artifact@v4
-        with:
-          name: skia-android-rel-arm64-sdk
-          path: ${{ steps.package.outputs.zip_path }}
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}.zip
