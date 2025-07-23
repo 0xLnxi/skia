@@ -84,7 +84,7 @@ jobs:
             echo "target_cpu = \"${{ matrix.target_cpu }}\""
           } > out/Release/args.gn
 
-          # Append platform-specific arguments using if/elif. This is the most reliable method.
+          # Append platform-specific arguments
           if [ "${{ matrix.target_os }}" = "win" ]; then
             {
               echo ""
@@ -95,10 +95,8 @@ jobs:
               echo "dawn_enable_d3d11 = true"
               echo "dawn_enable_d3d12 = true"
               echo "dawn_enable_vulkan = true"
-              # Note the explicit quotes around flags, which are required by gn syntax.
               echo 'extra_cflags_c = [ "/MT" ]'
               echo 'extra_cflags_cc = [ "/MT", "/std:c++20" ]'
-              
               echo ""
               echo "# Windows-specific toolchain"
               echo "cc = \"clang\""
