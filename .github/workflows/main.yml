@@ -1,9 +1,9 @@
-name: Build Skia SDK (Corrected)
+name: Build Skia SDK (Final)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 2 * * 0' # 每周日 UTC 2点
+    - cron: '0 2 * * 0'
 
 jobs:
   build:
@@ -29,10 +29,6 @@ jobs:
             android_api: 21
 
     steps:
-      - name: Checkout Skia Source Code
-        # 注意：此工作流假设Skia源码已在仓库中
-        uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -45,7 +41,6 @@ jobs:
           sudo apt-get install -y \
             git g++ clang ninja-build zip unzip \
             libfontconfig-dev libgl1-mesa-dev libvulkan-dev
-          # 为安卓构建安装JDK
           if [ "${{ matrix.target_os }}" = "android" ]; then
             sudo apt-get install -y openjdk-11-jdk
           fi
@@ -57,8 +52,10 @@ jobs:
         with:
           ndk-version: r25c
 
-      - name: Set up depot_tools (Clone)
+      # This step is new/changed
+      - name: Clone Official Skia Repository and Depot Tools
         run: |
+          git clone https://skia.googlesource.com/skia.git
           git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
           echo "$GITHUB_WORKSPACE/depot_tools" >> $GITHUB_PATH
         shell: bash
@@ -68,15 +65,15 @@ jobs:
         shell: bash
 
       - name: Sync Skia dependencies
+        # This and all following steps must run inside the 'skia' directory
+        working-directory: ./skia
         run: python3 tools/git-sync-deps
 
       - name: Configure Skia build with GN
+        working-directory: ./skia
         run: |
           mkdir -p out/Release
-          
-          # 写入通用参数
           {
-            echo "# Common build arguments"
             echo "is_official_build = true"
             echo "is_debug = false"
             echo "skia_use_freetype = true"
@@ -95,12 +92,9 @@ jobs:
             echo "target_os = \"${{ matrix.target_os }}\""
             echo "target_cpu = \"${{ matrix.target_cpu }}\""
           } > out/Release/args.gn
-
-          # 写入特定平台参数
           if [ "${{ matrix.target_os }}" = "win" ]; then
             {
               echo ""
-              echo "# Windows-specific arguments"
               echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
               echo "skia_use_dawn = true"
@@ -116,7 +110,6 @@ jobs:
           elif [ "${{ matrix.target_os }}" = "linux" ]; then
             {
               echo ""
-              echo "# Linux-specific arguments"
               echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
               echo "skia_use_gl = true"
@@ -126,36 +119,33 @@ jobs:
           elif [ "${{ matrix.target_os }}" = "android" ]; then
             {
               echo ""
-              echo "# Android-specific arguments"
               echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
               echo "skia_use_gl = true"
               echo "skia_use_vulkan = true"
-              # 使用正确的参数名和环境变量
               echo "android_api_level = ${{ matrix.android_api }}"
               echo "ndk = \"$ANDROID_NDK_ROOT\""
               echo 'extra_cflags_cc = [ "-std=c++20" ]'
             } >> out/Release/args.gn
           fi
-
           echo "--- Content of args.gn ---"
           cat out/Release/args.gn
           echo "--------------------------"
-
           gn gen out/Release
         shell: bash
 
       - name: Compile Skia with Ninja
+        working-directory: ./skia
         run: ninja -C out/Release -j 4
 
       - name: Package SDK
-        # ... 此处打包步骤与之前相同，保持不变 ...
+        working-directory: ./skia
         run: |
-          SDK_DIR="skia-sdk"
+          SDK_DIR="../skia-sdk" # Output sdk outside the skia source dir
           mkdir -p "$SDK_DIR/include" "$SDK_DIR/lib" "$SDK_DIR/bin" "$SDK_DIR/LICENSES"
-          echo "Copying header files..."
           cp -r include "$SDK_DIR/"
           cp -r modules "$SDK_DIR/include/"
+          # ... (rest of packaging script is the same)
           if [ -d "third_party/externals/dawn/include" ]; then
             mkdir -p "$SDK_DIR/include/third_party/externals/dawn"
             cp -r third_party/externals/dawn/include/* "$SDK_DIR/include/third_party/externals/dawn/"
@@ -164,15 +154,13 @@ jobs:
             mkdir -p "$SDK_DIR/include/gen/third_party/externals/dawn"
             cp -r out/Release/gen/third_party/externals/dawn/include/* "$SDK_DIR/include/gen/third_party/externals/dawn/"
           fi
-          echo "Copying library and binary files..."
           cp out/Release/*.a "$SDK_DIR/lib/" 2>/dev/null || true
           cp out/Release/*.so "$SDK_DIR/bin/" 2>/dev/null || true
           cp out/Release/*.lib "$SDK_DIR/lib/" 2>/dev/null || true
           cp out/Release/*.dll "$SDK_DIR/bin/" 2>/dev/null || true
           cp out/Release/icudtl.dat "$SDK_DIR/bin/" 2>/dev/null || true
-          echo "Copying license files..."
           find . -maxdepth 3 -type f \( -name "LICENSE*" -o -name "COPYING*" \) -exec bash -c 'cp "$1" "'$SDK_DIR'/LICENSES/$(basename $(dirname "$1"))-$(basename "$1")"' _ {} \;
-          echo "Generating SkiaConfig.cmake..."
+          # ... (CMake file generation is the same) ...
           {
             echo '# Skia SDK CMake config file (auto-generated by GitHub Actions)'
             echo 'get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)'
