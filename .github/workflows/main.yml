@@ -110,8 +110,9 @@ jobs:
               echo ""
               echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
-              echo "skia_use_gl = true"
-              echo "skia_use_vulkan = true"
+              echo "skia_use_dawn = true"
+              echo "dawn_enable_opengles = true"
+              echo "dawn_enable_vulkan = true"
               echo 'extra_cflags_cc = [ "-std=c++20" ]'
             } >> out/Release/args.gn
           elif [ "${{ matrix.target_os }}" = "android" ]; then
@@ -120,8 +121,9 @@ jobs:
               echo "# Android-specific arguments (more complete)"
               echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
-              echo "skia_use_gl = true"
-              echo "skia_use_vulkan = true"
+              echo "skia_use_dawn = true"
+              echo "dawn_enable_opengles = true"
+              echo "dawn_enable_vulkan = true"
               echo "skia_use_icu = true"
               echo "skia_enable_skshaper = true"
               echo "skia_enable_fontmgr_android = true"
