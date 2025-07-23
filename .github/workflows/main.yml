@@ -1,9 +1,7 @@
 name: Build Skia SDK
 
 on:
-  # 允许手动从 Actions 页面触发
   workflow_dispatch:
-  # 每周日凌晨 2:00 (UTC) 自动构建
   schedule:
     - cron: '0 2 * * 0'
 
@@ -20,38 +18,14 @@ jobs:
             target_os: "win"
             target_cpu: "x64"
             artifact_name: "skia-win-rel-x64-sdk"
-            gn_extra_args: >
-              skia_enable_ganesh = false
-              skia_enable_graphite = true
-              skia_use_dawn = true
-              dawn_enable_d3d11 = true
-              dawn_enable_d3d12 = true
-              dawn_enable_vulkan = true
-              extra_cflags_c = [ "/MT" ]
-              extra_cflags_cc = [ "/MT", "/std:c++20" ]
-
           - os: ubuntu-latest
             target_os: "linux"
             target_cpu: "x64"
             artifact_name: "skia-linux-rel-x64-sdk"
-            gn_extra_args: >
-              skia_enable_ganesh = false
-              skia_enable_graphite = true
-              skia_use_gl = true
-              skia_use_vulkan = true
-              extra_cflags_cc = [ "-std=c++20" ]
-
           - os: ubuntu-latest
             target_os: "android"
             target_cpu: "arm64"
             artifact_name: "skia-android-rel-arm64-sdk"
-            gn_extra_args: >
-              skia_enable_ganesh = false
-              skia_enable_graphite = true
-              skia_use_gl = true
-              skia_use_vulkan = true
-              ndk = "/usr/local/lib/android/sdk/ndk/25.2.9519653"
-              extra_cflags_cc = [ "-std=c++20" ]
 
     steps:
       - name: Checkout Skia Source Code
@@ -88,8 +62,7 @@ jobs:
         run: |
           mkdir -p out/Release
           
-          # 推荐方式：使用 echo 将参数直接写入 args.gn 文件。
-          # 这种方法可以完美处理换行和引号，比拼接命令行字符串更稳定。
+          # Write common arguments first
           {
             echo "# Common build arguments"
             echo "is_official_build = true"
@@ -109,20 +82,49 @@ jobs:
             echo "skia_use_system_harfbuzz = false"
             echo "target_os = \"${{ matrix.target_os }}\""
             echo "target_cpu = \"${{ matrix.target_cpu }}\""
-            echo ""
-            echo "# Platform-specific arguments from the matrix"
-            echo "${{ matrix.gn_extra_args }}"
           } > out/Release/args.gn
 
-          # 对 Windows, 追加 Clang 工具链的路径
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            CLANG_PATH_ESCAPED=$(echo 'C:/Program Files/LLVM' | sed 's/\\/\\\\/g')
+          # Append platform-specific arguments using if/elif. This is the most reliable method.
+          if [ "${{ matrix.target_os }}" = "win" ]; then
             {
+              echo ""
+              echo "# Windows-specific arguments"
+              echo "skia_enable_ganesh = false"
+              echo "skia_enable_graphite = true"
+              echo "skia_use_dawn = true"
+              echo "dawn_enable_d3d11 = true"
+              echo "dawn_enable_d3d12 = true"
+              echo "dawn_enable_vulkan = true"
+              # Note the explicit quotes around flags, which are required by gn syntax.
+              echo 'extra_cflags_c = [ "/MT" ]'
+              echo 'extra_cflags_cc = [ "/MT", "/std:c++20" ]'
+              
               echo ""
               echo "# Windows-specific toolchain"
               echo "cc = \"clang\""
               echo "cxx = \"clang++\""
-              echo "clang_win = \"$CLANG_PATH_ESCAPED\""
+              echo 'clang_win = "C:/Program Files/LLVM"'
+            } >> out/Release/args.gn
+          elif [ "${{ matrix.target_os }}" = "linux" ]; then
+            {
+              echo ""
+              echo "# Linux-specific arguments"
+              echo "skia_enable_ganesh = false"
+              echo "skia_enable_graphite = true"
+              echo "skia_use_gl = true"
+              echo "skia_use_vulkan = true"
+              echo 'extra_cflags_cc = [ "-std=c++20" ]'
+            } >> out/Release/args.gn
+          elif [ "${{ matrix.target_os }}" = "android" ]; then
+            {
+              echo ""
+              echo "# Android-specific arguments"
+              echo "skia_enable_ganesh = false"
+              echo "skia_enable_graphite = true"
+              echo "skia_use_gl = true"
+              echo "skia_use_vulkan = true"
+              echo 'ndk = "/usr/local/lib/android/sdk/ndk/25.2.9519653"'
+              echo 'extra_cflags_cc = [ "-std=c++20" ]'
             } >> out/Release/args.gn
           fi
 
@@ -130,7 +132,6 @@ jobs:
           cat out/Release/args.gn
           echo "--------------------------"
 
-          # 运行 gn gen, 它会自动读取同一目录下的 args.gn 文件
           gn gen out/Release
         shell: bash
 
