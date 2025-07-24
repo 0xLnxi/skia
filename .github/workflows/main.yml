@@ -164,17 +164,17 @@ jobs:
           SDK_LICENSE_DIR="$SDK_DIR/LICENSES"
           mkdir -p "$SDK_INCLUDE_DIR" "$SDK_LIB_DIR" "$SDK_BIN_DIR" "$SDK_LICENSE_DIR"
           echo "SDK 目录结构创建完毕。"
-          # 1. 收录头文件
+          # 1. 收录头文件 (精确翻译)
           echo "正在收录头文件..."
-          cp -r include/* "$SDK_INCLUDE_DIR/"
-          cp -r modules/* "$SDK_INCLUDE_DIR/"
+          cp -r include "$SDK_INCLUDE_DIR/"
+          cp -r modules "$SDK_INCLUDE_DIR/"
           if [ -d "third_party/externals/dawn/include" ]; then
             mkdir -p "$SDK_INCLUDE_DIR/third_party/externals/dawn"
-            cp -r third_party/externals/dawn/include/* "$SDK_INCLUDE_DIR/third_party/externals/dawn/"
+            cp -r third_party/externals/dawn/include "$SDK_INCLUDE_DIR/third_party/externals/dawn/"
           fi
           if [ -d "$BUILD_DIR/gen/third_party/externals/dawn/include" ]; then
             mkdir -p "$SDK_INCLUDE_DIR/gen/third_party/externals/dawn"
-            cp -r "$BUILD_DIR/gen/third_party/externals/dawn/include/"* "$SDK_INCLUDE_DIR/gen/third_party/externals/dawn/"
+            cp -r "$BUILD_DIR/gen/third_party/externals/dawn/include" "$SDK_INCLUDE_DIR/gen/third_party/externals/dawn/"
           fi
           echo "头文件收录完毕。"
           # 2. 收录库文件和二进制文件
@@ -188,7 +188,7 @@ jobs:
           fi
           cp "$BUILD_DIR"/icudtl.dat "$SDK_BIN_DIR/" 2>/dev/null || true
           echo "库文件和二进制文件收录完毕。"
-          # 3. 收录许可证文件 (使用父目录名-文件名的方式)
+          # 3. 收录许可证文件
           echo "正在收录许可证文件..."
           find . -maxdepth 3 -type f \( -name "LICENSE*" -o -name "COPYING*" \) -exec bash -c 'cp "$1" "'$SDK_LICENSE_DIR'/$(basename $(dirname "$1"))-$(basename "$1")"' _ {} \;
           echo "许可证文件收录完毕。"
@@ -204,9 +204,10 @@ jobs:
               echo 'if (NOT TARGET Skia::Skia)'
               echo '    add_library(Skia::Skia INTERFACE IMPORTED)'
               echo '    target_include_directories(Skia::Skia INTERFACE'
-              echo '            "${Skia_INCLUDE_DIR}"'
-              echo '            "${Skia_INCLUDE_DIR}/third_party/externals/dawn"'
-              echo '            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn"'
+              echo '            "${Skia_INCLUDE_DIR}/include"'
+              echo '            "${Skia_INCLUDE_DIR}/modules"'
+              echo '            "${Skia_INCLUDE_DIR}/third_party/externals/dawn/include"'
+              echo '            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include"'
               echo '    )'
               echo '    target_link_libraries(Skia::Skia INTERFACE'
               echo '            "${Skia_LIBRARY_DIR}/skia.lib"'
@@ -234,9 +235,10 @@ jobs:
               echo 'if (NOT TARGET Skia::Skia)'
               echo '    add_library(Skia::Skia INTERFACE IMPORTED)'
               echo '    target_include_directories(Skia::Skia INTERFACE'
-              echo '            "${Skia_INCLUDE_DIR}"'
-              echo '            "${Skia_INCLUDE_DIR}/third_party/externals/dawn"'
-              echo '            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn"'
+              echo '            "${Skia_INCLUDE_DIR}/include"'
+              echo '            "${Skia_INCLUDE_DIR}/modules"'
+              echo '            "${Skia_INCLUDE_DIR}/third_party/externals/dawn/include"'
+              echo '            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include"'
               echo '    )'
               echo '    target_link_libraries(Skia::Skia INTERFACE'
               echo '            "${Skia_LIBRARY_DIR}/libskia.a"'
@@ -263,9 +265,10 @@ jobs:
               echo 'if (NOT TARGET Skia::Skia)'
               echo '    add_library(Skia::Skia INTERFACE IMPORTED)'
               echo '    target_include_directories(Skia::Skia INTERFACE'
-              echo '            "${Skia_INCLUDE_DIR}"'
-              echo '            "${Skia_INCLUDE_DIR}/third_party/externals/dawn"'
-              echo '            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn"'
+              echo '            "${Skia_INCLUDE_DIR}/include"'
+              echo '            "${Skia_INCLUDE_DIR}/modules"'
+              echo '            "${Skia_INCLUDE_DIR}/third_party/externals/dawn/include"'
+              echo '            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include"'
               echo '    )'
               echo '    target_link_libraries(Skia::Skia INTERFACE'
               echo '            "${Skia_LIBRARY_DIR}/libskia.a"'
