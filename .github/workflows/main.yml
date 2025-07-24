@@ -76,7 +76,6 @@ jobs:
           {
             echo "is_official_build = true"
             echo "is_debug = false"
-            echo "pa_is_component_build = false"
             echo "skia_use_freetype = true"
             echo "skia_use_harfbuzz = true"
             echo "skia_pdf_subset_harfbuzz = true"
