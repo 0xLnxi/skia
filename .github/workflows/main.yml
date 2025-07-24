@@ -113,6 +113,7 @@ jobs:
               echo "skia_use_dawn = true"
               echo "dawn_enable_opengles = true"
               echo "dawn_enable_vulkan = true"
+              echo "dawn_enable_x11 = true"
               echo 'extra_cflags_cc = [ "-std=c++20" ]'
             } >> out/Release/args.gn
           elif [ "${{ matrix.target_os }}" = "android" ]; then
