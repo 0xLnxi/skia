@@ -40,7 +40,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y \
             git g++ clang ninja-build zip unzip \
-            libfontconfig-dev libgl1-mesa-dev libvulkan-dev
+            libfontconfig-dev libgl1-mesa-dev libvulkan-dev \
+            libx11-xcb-dev # 为Dawn的X11后端添加依赖
+          # 为安卓构建安装JDK
           if [ "${{ matrix.target_os }}" = "android" ]; then
             sudo apt-get install -y openjdk-11-jdk
           fi
@@ -143,8 +145,6 @@ jobs:
 
       - name: Compile Skia with Ninja
         working-directory: ./skia
-        # Explicitly build the 'skia' and 'modules' targets 
-        # to bypass the failing //:skia.h action.
         run: ninja -C out/Release -j 4 skia modules
 
       - name: Package SDK
