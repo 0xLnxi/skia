@@ -1,4 +1,4 @@
-name: Build Skia SDK (Precise Packaging)
+name: Build Skia SDK (Final Corrected)
 
 on:
   workflow_dispatch:
@@ -40,7 +40,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y \
             git g++ clang ninja-build zip unzip \
-            libfontconfig-dev libgl1-mesa-dev libvulkan-dev libx11-xcb-dev
+            libfontconfig-dev libgl1-mesa-dev libvulkan-dev \
+            libx11-xcb-dev # 为Dawn的X11后端添加依赖
+          # 为安卓构建安装JDK
           if [ "${{ matrix.target_os }}" = "android" ]; then
             sudo apt-get install -y openjdk-11-jdk
           fi
@@ -119,6 +121,7 @@ jobs:
           elif [ "${{ matrix.target_os }}" = "android" ]; then
             {
               echo ""
+              echo "# Android-specific arguments (more complete)"
               echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
               echo "skia_use_dawn = true"
@@ -144,142 +147,144 @@ jobs:
         working-directory: ./skia
         run: ninja -C out/Release -j 4 skia modules
 
-      - name: Package SDK according to original script
+      - name: Package SDK
         working-directory: ./skia
-        shell: bash
         run: |
+          # 0. 准备目标目录
           SDK_DIR="../skia-sdk"
           BUILD_DIR="./out/Release"
-
-          echo "--- Starting SDK Packaging ---"
-          
-          # 1. 清理并创建目录结构
+          echo "步骤 4/5: 开始打包 SDK 到 '$SDK_DIR'"
           if [ -d "$SDK_DIR" ]; then
-            echo "Cleaning old SDK directory..."
-            rm -rf "$SDK_DIR"
+              echo "正在清理旧的 SDK 目录..."
+              rm -rf "$SDK_DIR"
           fi
-          echo "Creating SDK directory structure..."
-          mkdir -p "$SDK_DIR/include" "$SDK_DIR/lib" "$SDK_DIR/bin" "$SDK_DIR/LICENSES"
-
-          # 2. 收录头文件 (完全复刻原始逻辑)
-          echo "Copying header files..."
-          cp -r include/ "$SDK_DIR/"
-          cp -r modules/ "$SDK_DIR/include/"
+          SDK_INCLUDE_DIR="$SDK_DIR/include"
+          SDK_LIB_DIR="$SDK_DIR/lib"
+          SDK_BIN_DIR="$SDK_DIR/bin"
+          SDK_LICENSE_DIR="$SDK_DIR/LICENSES"
+          mkdir -p "$SDK_INCLUDE_DIR" "$SDK_LIB_DIR" "$SDK_BIN_DIR" "$SDK_LICENSE_DIR"
+          echo "SDK 目录结构创建完毕。"
+          # 1. 收录头文件
+          echo "正在收录头文件..."
+          cp -r include/* "$SDK_INCLUDE_DIR/"
+          cp -r modules/* "$SDK_INCLUDE_DIR/"
           if [ -d "third_party/externals/dawn/include" ]; then
-            mkdir -p "$SDK_DIR/include/third_party/externals/dawn"
-            cp -r third_party/externals/dawn/include/* "$SDK_DIR/include/third_party/externals/dawn/"
+            mkdir -p "$SDK_INCLUDE_DIR/third_party/externals/dawn"
+            cp -r third_party/externals/dawn/include/* "$SDK_INCLUDE_DIR/third_party/externals/dawn/"
           fi
           if [ -d "$BUILD_DIR/gen/third_party/externals/dawn/include" ]; then
-            mkdir -p "$SDK_DIR/include/gen/third_party/externals/dawn"
-            cp -r "$BUILD_DIR/gen/third_party/externals/dawn/include/"* "$SDK_DIR/include/gen/third_party/externals/dawn/"
+            mkdir -p "$SDK_INCLUDE_DIR/gen/third_party/externals/dawn"
+            cp -r "$BUILD_DIR/gen/third_party/externals/dawn/include/"* "$SDK_INCLUDE_DIR/gen/third_party/externals/dawn/"
           fi
-          echo "Header files copied."
-
-          # 3. 收录库文件和二进制文件 (平台自适应)
-          echo "Copying library and binary files..."
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "$BUILD_DIR"/*.lib "$SDK_DIR/lib/" 2>/dev/null || true
-            cp "$BUILD_DIR"/*.dll "$SDK_DIR/bin/" 2>/dev/null || true
-          else # Linux and Android
-            cp "$BUILD_DIR"/*.a "$SDK_DIR/lib/" 2>/dev/null || true
-            cp "$BUILD_DIR"/*.so "$SDK_DIR/bin/" 2>/dev/null || true
+          echo "头文件收录完毕。"
+          # 2. 收录库文件和二进制文件
+          echo "正在收录库文件和二进制文件..."
+          if [ "${{ matrix.target_os }}" = "win" ]; then
+            cp "$BUILD_DIR"/*.lib "$SDK_LIB_DIR/" 2>/dev/null || true
+            cp "$BUILD_DIR"/*.dll "$SDK_BIN_DIR/" 2>/dev/null || true
+          else
+            cp "$BUILD_DIR"/*.a "$SDK_LIB_DIR/" 2>/dev/null || true
+            cp "$BUILD_DIR"/*.so "$SDK_BIN_DIR/" 2>/dev/null || true
           fi
-          cp "$BUILD_DIR"/icudtl.dat "$SDK_DIR/bin/" 2>/dev/null || true
-          echo "Library and binary files copied."
-
-          # 4. 收录许可证文件 (完全复刻原始逻辑)
-          echo "Copying license files..."
-          # 查找深度为4以包含如 third_party/externals/icu 之类的目录
-          find . -maxdepth 4 -type f \( -name "LICENSE*" -o -name "COPYING*" \) -exec bash -c 'cp "$1" "'$SDK_DIR'/LICENSES/$(basename $(dirname "$1"))-$(basename "$1")"' _ {} \;
-          echo "License files copied."
-
-          # 5. 生成跨平台的 CMake 配置文件
-          echo "Generating cross-platform SkiaConfig.cmake..."
-          # 使用 'EOF' 以防止 shell 扩展 ${...} 变量
-          cat > "$SDK_DIR/SkiaConfig.cmake" << 'EOF'
-# Skia SDK CMake config file
-# This file is automatically generated.
-
-# Get the directory where this config file is located.
-get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
-
-set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")
-set(Skia_LIBRARY_DIR "${Skia_SELF_DIR}/lib")
-set(Skia_BINARY_DIR "${Skia_SELF_DIR}/bin")
-
-if (NOT TARGET Skia::Skia)
-    add_library(Skia::Skia INTERFACE IMPORTED)
-
-    # --- Set include directories ---
-    target_include_directories(Skia::Skia INTERFACE
-            "${Skia_INCLUDE_DIR}"
-            "${Skia_INCLUDE_DIR}/third_party/externals/dawn"
-            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn"
-    )
-
-    # --- Platform-specific link libraries ---
-    if(WIN32)
-        message(STATUS "Configuring Skia for Windows")
-        target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES SK_BUILD_FOR_WIN)
-        target_link_libraries(Skia::Skia INTERFACE
-                # Skia & Dawn Core libs
-                "${Skia_LIBRARY_DIR}/skia.lib"
-                "${Skia_LIBRARY_DIR}/skcms.lib"
-                "${Skia_LIBRARY_DIR}/skshaper.lib"
-                "${Skia_LIBRARY_DIR}/skunicode.lib"
-                "${Skia_LIBRARY_DIR}/dawn_native.dll.lib"
-                "${Skia_LIBRARY_DIR}/dawn_proc.dll.lib"
-                "${Skia_LIBRARY_DIR}/dawn_platform.dll.lib"
-                # Dependencies
-                "${Skia_LIBRARY_DIR}/freetype.lib"
-                "${Skia_LIBRARY_DIR}/harfbuzz.lib"
-                "${Skia_LIBRARY_DIR}/icu.lib"
-                "${Skia_LIBRARY_DIR}/zlib.lib"
-                # Windows System Libraries
-                d3d11.lib d3d12.lib dxgi.lib dxguid.lib opengl32.lib
-        )
-    elseif(ANDROID)
-        message(STATUS "Configuring Skia for Android")
-        target_compile_definitions(Skia::Skia INTERFACE SK_BUILD_FOR_ANDROID)
-        target_link_libraries(Skia::Skia INTERFACE
-                # Order is important on static builds
-                "${Skia_LIBRARY_DIR}/libskia.a"
-                "${Skia_LIBRARY_DIR}/libskshaper.a"
-                "${Skia_LIBRARY_DIR}/libskunicode.a"
-                "${Skia_LIBRARY_DIR}/libskcms.a"
-                "${Skia_LIBRARY_DIR}/libdawn_native.a"
-                "${Skia_LIBRARY_DIR}/libdawn_proc.a"
-                "${Skia_LIBRARY_DIR}/libdawn_platform.a"
-                "${Skia_LIBRARY_DIR}/libfreetype.a"
-                "${Skia_LIBRARY_DIR}/libharfbuzz.a"
-                "${Skia_LIBRARY_DIR}/libicu.a"
-                "${Skia_LIBRARY_DIR}/libz.a"
-                # Android System Libraries
-                android log EGL GLESv2 vulkan
-        )
-    elseif(UNIX)
-        message(STATUS "Configuring Skia for Linux")
-        target_compile_definitions(Skia::Skia INTERFACE SK_BUILD_FOR_UNIX)
-        target_link_libraries(Skia::Skia INTERFACE
-                # Order is important on static builds
-                "${Skia_LIBRARY_DIR}/libskia.a"
-                "${Skia_LIBRARY_DIR}/libskshaper.a"
-                "${Skia_LIBRARY_DIR}/libskunicode.a"
-                "${Skia_LIBRARY_DIR}/libskcms.a"
-                "${Skia_LIBRARY_DIR}/libdawn_native.a"
-                "${Skia_LIBRARY_DIR}/libdawn_proc.a"
-                "${Skia_LIBRARY_DIR}/libdawn_platform.a"
-                "${Skia_LIBRARY_DIR}/libfreetype.a"
-                "${Skia_LIBRARY_DIR}/libharfbuzz.a"
-                "${Skia_LIBRARY_DIR}/libicu.a"
-                "${Skia_LIBRARY_DIR}/libz.a"
-                # Linux System Libraries
-                fontconfig freetype GL vulkan X11 X11-xcb pthread dl
-        )
-    endif()
-endif()
-EOF
-          echo "CMake config file generated."
+          cp "$BUILD_DIR"/icudtl.dat "$SDK_BIN_DIR/" 2>/dev/null || true
+          echo "库文件和二进制文件收录完毕。"
+          # 3. 收录许可证文件 (使用父目录名-文件名的方式)
+          echo "正在收录许可证文件..."
+          find . -maxdepth 3 -type f \( -name "LICENSE*" -o -name "COPYING*" \) -exec bash -c 'cp "$1" "'$SDK_LICENSE_DIR'/$(basename $(dirname "$1"))-$(basename "$1")"' _ {} \;
+          echo "许可证文件收录完毕。"
+          # 4. 生成特定于平台的 CMake 配置文件
+          echo "正在生成 CMake 配置文件..."
+          if [ "${{ matrix.target_os }}" = "win" ]; then
+            {
+              echo '# Skia SDK CMake config file (for Windows)'
+              echo 'get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)'
+              echo 'set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")'
+              echo 'set(Skia_LIBRARY_DIR "${Skia_SELF_DIR}/lib")'
+              echo 'set(Skia_BINARY_DIR "${Skia_SELF_DIR}/bin")'
+              echo 'if (NOT TARGET Skia::Skia)'
+              echo '    add_library(Skia::Skia INTERFACE IMPORTED)'
+              echo '    target_include_directories(Skia::Skia INTERFACE'
+              echo '            "${Skia_INCLUDE_DIR}"'
+              echo '            "${Skia_INCLUDE_DIR}/third_party/externals/dawn"'
+              echo '            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn"'
+              echo '    )'
+              echo '    target_link_libraries(Skia::Skia INTERFACE'
+              echo '            "${Skia_LIBRARY_DIR}/skia.lib"'
+              echo '            "${Skia_LIBRARY_DIR}/skcms.lib"'
+              echo '            "${Skia_LIBRARY_DIR}/skunicode.lib"'
+              echo '            "${Skia_LIBRARY_DIR}/skshaper.lib"'
+              echo '            "${Skia_LIBRARY_DIR}/icu.lib"'
+              echo '            "${Skia_LIBRARY_DIR}/dawn_native.dll.lib"'
+              echo '            "${Skia_LIBRARY_DIR}/dawn_proc.dll.lib"'
+              echo '            "${Skia_LIBRARY_DIR}/dawn_platform.dll.lib"'
+              echo '            "${Skia_LIBRARY_DIR}/freetype.lib"'
+              echo '            "${Skia_LIBRARY_DIR}/harfbuzz.lib"'
+              echo '            d3d11.lib d3d12.lib dxguid.lib opengl32.lib'
+              echo '    )'
+              echo '    target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES SK_BUILD_FOR_WIN)'
+              echo 'endif()'
+            } > "$SDK_DIR/SkiaConfig.cmake"
+          elif [ "${{ matrix.target_os }}" = "linux" ]; then
+            {
+              echo '# Skia SDK CMake config file (for Linux)'
+              echo 'get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)'
+              echo 'set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")'
+              echo 'set(Skia_LIBRARY_DIR "${Skia_SELF_DIR}/lib")'
+              echo 'set(Skia_BINARY_DIR "${Skia_SELF_DIR}/bin")'
+              echo 'if (NOT TARGET Skia::Skia)'
+              echo '    add_library(Skia::Skia INTERFACE IMPORTED)'
+              echo '    target_include_directories(Skia::Skia INTERFACE'
+              echo '            "${Skia_INCLUDE_DIR}"'
+              echo '            "${Skia_INCLUDE_DIR}/third_party/externals/dawn"'
+              echo '            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn"'
+              echo '    )'
+              echo '    target_link_libraries(Skia::Skia INTERFACE'
+              echo '            "${Skia_LIBRARY_DIR}/libskia.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libskcms.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libskunicode.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libskshaper.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libicu.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libdawn_native.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libdawn_proc.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libdawn_platform.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libfreetype.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libharfbuzz.a"'
+              echo '            -lfontconfig -lGL -lEGL -lX11 -lX11-xcb -lXext -lXfixes -ldl -lpthread -lrt'
+              echo '    )'
+              echo 'endif()'
+            } > "$SDK_DIR/SkiaConfig.cmake"
+          elif [ "${{ matrix.target_os }}" = "android" ]; then
+            {
+              echo '# Skia SDK CMake config file (for Android)'
+              echo 'get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)'
+              echo 'set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")'
+              echo 'set(Skia_LIBRARY_DIR "${Skia_SELF_DIR}/lib")'
+              echo 'set(Skia_BINARY_DIR "${Skia_SELF_DIR}/bin")'
+              echo 'if (NOT TARGET Skia::Skia)'
+              echo '    add_library(Skia::Skia INTERFACE IMPORTED)'
+              echo '    target_include_directories(Skia::Skia INTERFACE'
+              echo '            "${Skia_INCLUDE_DIR}"'
+              echo '            "${Skia_INCLUDE_DIR}/third_party/externals/dawn"'
+              echo '            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn"'
+              echo '    )'
+              echo '    target_link_libraries(Skia::Skia INTERFACE'
+              echo '            "${Skia_LIBRARY_DIR}/libskia.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libskcms.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libskunicode.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libskshaper.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libicu.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libdawn_native.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libdawn_proc.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libdawn_platform.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libfreetype.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libharfbuzz.a"'
+              echo '            -landroid -lEGL -lGLESv2 -ldl -llog'
+              echo '    )'
+              echo 'endif()'
+            } > "$SDK_DIR/SkiaConfig.cmake"
+          fi
+          echo "CMake 配置文件 'SkiaConfig.cmake' 已生成。"
+        shell: bash
 
       - name: Create ZIP archive
         run: 7z a -tzip "${{ matrix.artifact_name }}.zip" ./skia-sdk/*
