@@ -1,4 +1,4 @@
-name: Build Skia SDK (All Platforms Component Build)
+name: Build Skia SDK (Final Corrected)
 
 on:
   workflow_dispatch:
@@ -72,9 +72,11 @@ jobs:
         working-directory: ./skia
         run: |
           mkdir -p out/Release
+          # 通用参数
           {
             echo "is_official_build = true"
             echo "is_debug = false"
+            echo "pa_is_component_build = false"
             echo "skia_use_freetype = true"
             echo "skia_use_harfbuzz = true"
             echo "skia_pdf_subset_harfbuzz = true"
@@ -91,26 +93,31 @@ jobs:
             echo "target_os = \"${{ matrix.target_os }}\""
             echo "target_cpu = \"${{ matrix.target_cpu }}\""
           } > out/Release/args.gn
+          
+          # 平台特定参数
           if [ "${{ matrix.target_os }}" = "win" ]; then
             {
               echo ""
-              echo "is_component_build = true" # 生成 DLL
+              echo "# Windows-specific arguments based on local script"
+              echo "is_component_build = true"
+              echo "is_trivial_abi = false"
               echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
               echo "skia_use_dawn = true"
               echo "dawn_enable_d3d11 = true"
               echo "dawn_enable_d3d12 = true"
               echo "dawn_enable_vulkan = true"
-              echo 'extra_cflags_c = [ "/MT" ]'
-              echo 'extra_cflags_cc = [ "/MT", "/std:c++20" ]'
               echo "cc = \"clang\""
               echo "cxx = \"clang++\""
               echo 'clang_win = "C:/Program Files/LLVM"'
+              echo 'extra_cflags_c = [ "/MT" ]'
+              echo 'extra_cflags_cc = [ "/MT", "-D_USE_MATH_DEFINES", "/std:c++20" ]'
+              echo 'extra_ldflags = [ "/OPT:ICF", "/OPT:REF" ]'
             } >> out/Release/args.gn
           elif [ "${{ matrix.target_os }}" = "linux" ]; then
             {
               echo ""
-              echo "is_component_build = true" # 生成 .so
+              echo "is_component_build = true"
               echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
               echo "skia_use_dawn = true"
@@ -122,7 +129,7 @@ jobs:
           elif [ "${{ matrix.target_os }}" = "android" ]; then
             {
               echo ""
-              echo "is_component_build = true" # 生成 .so
+              echo "is_component_build = true"
               echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
               echo "skia_use_dawn = true"
@@ -177,7 +184,6 @@ jobs:
             cp "$BUILD_DIR"/*.lib "$SDK_LIB_DIR/" 2>/dev/null || true
             cp "$BUILD_DIR"/*.dll "$SDK_BIN_DIR/" 2>/dev/null || true
           else
-            # 对于Linux/Android, .so 文件是库, 应该放在 lib 目录
             cp "$BUILD_DIR"/*.a "$SDK_LIB_DIR/" 2>/dev/null || true
             cp "$BUILD_DIR"/*.so "$SDK_LIB_DIR/" 2>/dev/null || true
           fi
@@ -231,7 +237,6 @@ jobs:
               echo '            "${Skia_INCLUDE_DIR}/third_party/externals/dawn/include"'
               echo '            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include"'
               echo '    )'
-              echo '    # 链接 .so 动态库和 .a 静态库'
               echo '    target_link_libraries(Skia::Skia INTERFACE'
               echo '            "${Skia_LIBRARY_DIR}/libskia.a"'
               echo '            "${Skia_LIBRARY_DIR}/libskcms.a"'
@@ -262,7 +267,6 @@ jobs:
               echo '            "${Skia_INCLUDE_DIR}/third_party/externals/dawn/include"'
               echo '            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include"'
               echo '    )'
-              echo '    # 链接 .so 动态库和 .a 静态库'
               echo '    target_link_libraries(Skia::Skia INTERFACE'
               echo '            "${Skia_LIBRARY_DIR}/libskia.a"'
               echo '            "${Skia_LIBRARY_DIR}/libskcms.a"'
