@@ -72,64 +72,68 @@ jobs:
         working-directory: ./skia
         run: |
           mkdir -p out/Release
-          # 通用参数
-          {
-            echo "is_official_build = true"
-            echo "is_debug = false"
-            echo "skia_use_freetype = true"
-            echo "skia_use_harfbuzz = true"
-            echo "skia_pdf_subset_harfbuzz = true"
-            echo "skia_enable_skottie = true"
-            echo "skia_enable_svg = true"
-            echo "skia_use_system_expat = false"
-            echo "skia_use_system_icu = false"
-            echo "skia_use_system_libjpeg_turbo = false"
-            echo "skia_use_system_libpng = false"
-            echo "skia_use_system_libwebp = false"
-            echo "skia_use_system_zlib = false"
-            echo "skia_use_system_freetype2 = false"
-            echo "skia_use_system_harfbuzz = false"
-            echo "target_os = \"${{ matrix.target_os }}\""
-            echo "target_cpu = \"${{ matrix.target_cpu }}\""
-          } > out/Release/args.gn
-          
-          # 平台特定参数
+          # 移除所有通用参数，确保平台独占配置
+          > out/Release/args.gn
+
           if [ "${{ matrix.target_os }}" = "win" ]; then
             {
-              echo ""
-              echo "# Windows-specific arguments based on local script"
-              echo "is_component_build = true"
-              echo "is_trivial_abi = false"
+              echo "# Windows GN config based on local PowerShell script"
+              echo "cc = \"clang\""
+              echo "cxx = \"clang++\""
+              echo "# Toolchain paths are auto-detected in CI"
+              echo "is_trivial_abi=false"
+              echo "is_official_build = true"
+              echo "is_debug = false"
+              echo "skia_use_freetype = true"
+              echo "skia_use_harfbuzz = true"
+              echo "skia_pdf_subset_harfbuzz = true"
+              echo "skia_enable_skottie = true"
+              echo "skia_enable_svg = true"
               echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
               echo "skia_use_dawn = true"
               echo "dawn_enable_d3d11 = true"
               echo "dawn_enable_d3d12 = true"
               echo "dawn_enable_vulkan = true"
-              echo "cc = \"clang\""
-              echo "cxx = \"clang++\""
-              echo 'clang_win = "C:/Program Files/LLVM"'
+              echo "skia_use_system_expat = false"
+              echo "skia_use_system_icu = false"
+              echo "skia_use_system_libjpeg_turbo = false"
+              echo "skia_use_system_libpng = false"
+              echo "skia_use_system_libwebp = false"
+              echo "skia_use_system_zlib = false"
+              echo "skia_use_system_freetype2 = false"
+              echo "skia_use_system_harfbuzz = false"
+              echo "target_os = \"win\""
+              echo "target_cpu = \"x64\""
               echo 'extra_cflags_c = [ "/MT" ]'
               echo 'extra_cflags_cc = [ "/MT", "-D_USE_MATH_DEFINES", "/std:c++20" ]'
               echo 'extra_ldflags = [ "/OPT:ICF", "/OPT:REF" ]'
             } >> out/Release/args.gn
           elif [ "${{ matrix.target_os }}" = "linux" ]; then
             {
-              echo ""
+              echo "is_official_build = true"
+              echo "is_debug = false"
               echo "is_component_build = true"
-              echo "skia_enable_ganesh = false"
+              echo "pa_is_component_build = false"
+              echo "skia_use_freetype = true"
+              echo "skia_use_harfbuzz = true"
               echo "skia_enable_graphite = true"
               echo "skia_use_dawn = true"
               echo "dawn_enable_opengles = true"
               echo "dawn_enable_vulkan = true"
               echo "dawn_enable_x11 = true"
+              echo "target_os = \"linux\""
+              echo "target_cpu = \"x64\""
               echo 'extra_cflags_cc = [ "-std=c++20" ]'
             } >> out/Release/args.gn
           elif [ "${{ matrix.target_os }}" = "android" ]; then
             {
-              echo ""
+              echo "is_official_build = true"
+              echo "is_debug = false"
               echo "is_component_build = true"
-              echo "skia_enable_ganesh = false"
+              echo "pa_is_component_build = false"
+              echo "skia_use_freetype = true"
+              echo "skia_use_harfbuzz = true"
               echo "skia_enable_graphite = true"
               echo "skia_use_dawn = true"
               echo "dawn_enable_opengles = true"
@@ -137,8 +141,8 @@ jobs:
               echo "skia_use_icu = true"
               echo "skia_enable_skshaper = true"
               echo "skia_enable_fontmgr_android = true"
-              echo "skia_use_dng_sdk = false"
-              echo "skia_use_piex = false"
+              echo "target_os = \"android\""
+              echo "target_cpu = \"arm64\""
               echo "android_api_level = ${{ matrix.android_api }}"
               echo "ndk = \"$ANDROID_NDK_ROOT\""
               echo 'extra_cflags_cc = [ "-std=c++20" ]'
@@ -192,6 +196,7 @@ jobs:
           
           if [ "${{ matrix.target_os }}" = "win" ]; then
             {
+              # 注意: 此处链接的是静态库, 因为 gn 配置不再包含 is_component_build=true
               echo '# Skia SDK CMake config file (for Windows)'
               echo 'get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)'
               echo 'set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")'
@@ -211,9 +216,9 @@ jobs:
               echo '            "${Skia_LIBRARY_DIR}/skunicode.lib"'
               echo '            "${Skia_LIBRARY_DIR}/skshaper.lib"'
               echo '            "${Skia_LIBRARY_DIR}/icu.lib"'
-              echo '            "${Skia_LIBRARY_DIR}/dawn_native.dll.lib"'
-              echo '            "${Skia_LIBRARY_DIR}/dawn_proc.dll.lib"'
-              echo '            "${Skia_LIBRARY_DIR}/dawn_platform.dll.lib"'
+              echo '            "${Skia_LIBRARY_DIR}/dawn_native_static.lib"'
+              echo '            "${Skia_LIBRARY_DIR}/dawn_proc_static.lib"'
+              echo '            "${Skia_LIBRARY_DIR}/dawn_platform_static.lib"'
               echo '            "${Skia_LIBRARY_DIR}/freetype.lib"'
               echo '            "${Skia_LIBRARY_DIR}/harfbuzz.lib"'
               echo '            d3d11.lib d3d12.lib dxguid.lib opengl32.lib'
