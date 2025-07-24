@@ -147,7 +147,7 @@ jobs:
 
       - name: Compile Skia with Ninja
         working-directory: ./skia
-        run: ninja -C out/Release -j 4 skia modules
+        run: ninja -C out/Release -j 4
 
       - name: Package SDK
         working-directory: ./skia
