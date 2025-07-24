@@ -41,7 +41,8 @@ jobs:
           sudo apt-get install -y \
             git g++ clang ninja-build zip unzip \
             libfontconfig-dev libgl1-mesa-dev libvulkan-dev \
-            libx11-xcb-dev
+            libx11-xcb-dev # 为Dawn的X11后端添加依赖
+          # 为安卓构建安装JDK
           if [ "${{ matrix.target_os }}" = "android" ]; then
             sudo apt-get install -y openjdk-11-jdk
           fi
@@ -72,68 +73,58 @@ jobs:
         working-directory: ./skia
         run: |
           mkdir -p out/Release
-          # 移除所有通用参数，确保平台独占配置
-          > out/Release/args.gn
-
+          {
+            echo "is_official_build = true"
+            echo "is_debug = false"
+            echo "skia_use_freetype = true"
+            echo "skia_use_harfbuzz = true"
+            echo "skia_pdf_subset_harfbuzz = true"
+            echo "skia_enable_skottie = true"
+            echo "skia_enable_svg = true"
+            echo "skia_use_system_expat = false"
+            echo "skia_use_system_icu = false"
+            echo "skia_use_system_libjpeg_turbo = false"
+            echo "skia_use_system_libpng = false"
+            echo "skia_use_system_libwebp = false"
+            echo "skia_use_system_zlib = false"
+            echo "skia_use_system_freetype2 = false"
+            echo "skia_use_system_harfbuzz = false"
+            echo "target_os = \"${{ matrix.target_os }}\""
+            echo "target_cpu = \"${{ matrix.target_cpu }}\""
+          } > out/Release/args.gn
           if [ "${{ matrix.target_os }}" = "win" ]; then
             {
-              echo "# Windows GN config based on local PowerShell script"
-              echo "cc = \"clang\""
-              echo "cxx = \"clang++\""
-              echo "# Toolchain paths are auto-detected in CI"
-              echo "is_trivial_abi=false"
-              echo "is_official_build = true"
-              echo "is_debug = false"
-              echo "skia_use_freetype = true"
-              echo "skia_use_harfbuzz = true"
-              echo "skia_pdf_subset_harfbuzz = true"
-              echo "skia_enable_skottie = true"
-              echo "skia_enable_svg = true"
+              echo ""
               echo "skia_enable_ganesh = false"
+              echo "is_trivial_abi=false"
               echo "skia_enable_graphite = true"
               echo "skia_use_dawn = true"
               echo "dawn_enable_d3d11 = true"
               echo "dawn_enable_d3d12 = true"
               echo "dawn_enable_vulkan = true"
-              echo "skia_use_system_expat = false"
-              echo "skia_use_system_icu = false"
-              echo "skia_use_system_libjpeg_turbo = false"
-              echo "skia_use_system_libpng = false"
-              echo "skia_use_system_libwebp = false"
-              echo "skia_use_system_zlib = false"
-              echo "skia_use_system_freetype2 = false"
-              echo "skia_use_system_harfbuzz = false"
-              echo "target_os = \"win\""
-              echo "target_cpu = \"x64\""
               echo 'extra_cflags_c = [ "/MT" ]'
               echo 'extra_cflags_cc = [ "/MT", "-D_USE_MATH_DEFINES", "/std:c++20" ]'
               echo 'extra_ldflags = [ "/OPT:ICF", "/OPT:REF" ]'
+              echo "cc = \"clang\""
+              echo "cxx = \"clang++\""
+              echo 'clang_win = "C:/Program Files/LLVM"'
             } >> out/Release/args.gn
           elif [ "${{ matrix.target_os }}" = "linux" ]; then
             {
-              echo "is_official_build = true"
-              echo "is_debug = false"
-              echo "is_component_build = true"
-              echo "pa_is_component_build = false"
-              echo "skia_use_freetype = true"
-              echo "skia_use_harfbuzz = true"
+              echo ""
+              echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
               echo "skia_use_dawn = true"
               echo "dawn_enable_opengles = true"
               echo "dawn_enable_vulkan = true"
               echo "dawn_enable_x11 = true"
-              echo "target_os = \"linux\""
-              echo "target_cpu = \"x64\""
               echo 'extra_cflags_cc = [ "-std=c++20" ]'
             } >> out/Release/args.gn
           elif [ "${{ matrix.target_os }}" = "android" ]; then
             {
-              echo "is_official_build = true"
-              echo "is_debug = false"
-              echo "is_component_build = true"
-              echo "pa_is_component_build = false"
-              echo "skia_use_freetype = true"
-              echo "skia_use_harfbuzz = true"
+              echo ""
+              echo "# Android-specific arguments (more complete)"
+              echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
               echo "skia_use_dawn = true"
               echo "dawn_enable_opengles = true"
@@ -141,8 +132,8 @@ jobs:
               echo "skia_use_icu = true"
               echo "skia_enable_skshaper = true"
               echo "skia_enable_fontmgr_android = true"
-              echo "target_os = \"android\""
-              echo "target_cpu = \"arm64\""
+              echo "skia_use_dng_sdk = false"
+              echo "skia_use_piex = false"
               echo "android_api_level = ${{ matrix.android_api }}"
               echo "ndk = \"$ANDROID_NDK_ROOT\""
               echo 'extra_cflags_cc = [ "-std=c++20" ]'
@@ -161,9 +152,12 @@ jobs:
       - name: Package SDK
         working-directory: ./skia
         run: |
+          # 0. 准备目标目录
           SDK_DIR="../skia-sdk"
           BUILD_DIR="./out/Release"
+          echo "步骤 4/5: 开始打包 SDK 到 '$SDK_DIR'"
           if [ -d "$SDK_DIR" ]; then
+              echo "正在清理旧的 SDK 目录..."
               rm -rf "$SDK_DIR"
           fi
           SDK_INCLUDE_DIR="$SDK_DIR/include"
@@ -171,7 +165,9 @@ jobs:
           SDK_BIN_DIR="$SDK_DIR/bin"
           SDK_LICENSE_DIR="$SDK_DIR/LICENSES"
           mkdir -p "$SDK_INCLUDE_DIR" "$SDK_LIB_DIR" "$SDK_BIN_DIR" "$SDK_LICENSE_DIR"
-          
+          echo "SDK 目录结构创建完毕。"
+          # 1. 收录头文件 (精确翻译)
+          echo "正在收录头文件..."
           cp -r include "$SDK_INCLUDE_DIR/"
           cp -r modules "$SDK_INCLUDE_DIR/"
           if [ -d "third_party/externals/dawn/include" ]; then
@@ -182,21 +178,26 @@ jobs:
             mkdir -p "$SDK_INCLUDE_DIR/gen/third_party/externals/dawn"
             cp -r "$BUILD_DIR/gen/third_party/externals/dawn/include" "$SDK_INCLUDE_DIR/gen/third_party/externals/dawn/"
           fi
-          
+          echo "头文件收录完毕。"
+          # 2. 收录库文件和二进制文件
+          echo "正在收录库文件和二进制文件..."
           if [ "${{ matrix.target_os }}" = "win" ]; then
             cp "$BUILD_DIR"/*.lib "$SDK_LIB_DIR/" 2>/dev/null || true
             cp "$BUILD_DIR"/*.dll "$SDK_BIN_DIR/" 2>/dev/null || true
           else
             cp "$BUILD_DIR"/*.a "$SDK_LIB_DIR/" 2>/dev/null || true
-            cp "$BUILD_DIR"/*.so "$SDK_LIB_DIR/" 2>/dev/null || true
+            cp "$BUILD_DIR"/*.so "$SDK_BIN_DIR/" 2>/dev/null || true
           fi
           cp "$BUILD_DIR"/icudtl.dat "$SDK_BIN_DIR/" 2>/dev/null || true
-          
+          echo "库文件和二进制文件收录完毕。"
+          # 3. 收录许可证文件
+          echo "正在收录许可证文件..."
           find . -maxdepth 3 -type f \( -name "LICENSE*" -o -name "COPYING*" \) -exec bash -c 'cp "$1" "'$SDK_LICENSE_DIR'/$(basename $(dirname "$1"))-$(basename "$1")"' _ {} \;
-          
+          echo "许可证文件收录完毕。"
+          # 4. 生成特定于平台的 CMake 配置文件
+          echo "正在生成 CMake 配置文件..."
           if [ "${{ matrix.target_os }}" = "win" ]; then
             {
-              # 注意: 此处链接的是静态库, 因为 gn 配置不再包含 is_component_build=true
               echo '# Skia SDK CMake config file (for Windows)'
               echo 'get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)'
               echo 'set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")'
@@ -216,9 +217,9 @@ jobs:
               echo '            "${Skia_LIBRARY_DIR}/skunicode.lib"'
               echo '            "${Skia_LIBRARY_DIR}/skshaper.lib"'
               echo '            "${Skia_LIBRARY_DIR}/icu.lib"'
-              echo '            "${Skia_LIBRARY_DIR}/dawn_native_static.lib"'
-              echo '            "${Skia_LIBRARY_DIR}/dawn_proc_static.lib"'
-              echo '            "${Skia_LIBRARY_DIR}/dawn_platform_static.lib"'
+              echo '            "${Skia_LIBRARY_DIR}/dawn_native.dll.lib"'
+              echo '            "${Skia_LIBRARY_DIR}/dawn_proc.dll.lib"'
+              echo '            "${Skia_LIBRARY_DIR}/dawn_platform.dll.lib"'
               echo '            "${Skia_LIBRARY_DIR}/freetype.lib"'
               echo '            "${Skia_LIBRARY_DIR}/harfbuzz.lib"'
               echo '            d3d11.lib d3d12.lib dxguid.lib opengl32.lib'
@@ -247,9 +248,9 @@ jobs:
               echo '            "${Skia_LIBRARY_DIR}/libskunicode.a"'
               echo '            "${Skia_LIBRARY_DIR}/libskshaper.a"'
               echo '            "${Skia_LIBRARY_DIR}/libicu.a"'
-              echo '            "${Skia_LIBRARY_DIR}/libdawn_native.so"'
-              echo '            "${Skia_LIBRARY_DIR}/libdawn_proc.so"'
-              echo '            "${Skia_LIBRARY_DIR}/libdawn_platform.so"'
+              echo '            "${Skia_LIBRARY_DIR}/libdawn_native.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libdawn_proc.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libdawn_platform.a"'
               echo '            "${Skia_LIBRARY_DIR}/libfreetype.a"'
               echo '            "${Skia_LIBRARY_DIR}/libharfbuzz.a"'
               echo '            -lfontconfig -lGL -lEGL -lX11 -lX11-xcb -lXext -lXfixes -ldl -lpthread -lrt'
@@ -277,9 +278,9 @@ jobs:
               echo '            "${Skia_LIBRARY_DIR}/libskunicode.a"'
               echo '            "${Skia_LIBRARY_DIR}/libskshaper.a"'
               echo '            "${Skia_LIBRARY_DIR}/libicu.a"'
-              echo '            "${Skia_LIBRARY_DIR}/libdawn_native.so"'
-              echo '            "${Skia_LIBRARY_DIR}/libdawn_proc.so"'
-              echo '            "${Skia_LIBRARY_DIR}/libdawn_platform.so"'
+              echo '            "${Skia_LIBRARY_DIR}/libdawn_native.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libdawn_proc.a"'
+              echo '            "${Skia_LIBRARY_DIR}/libdawn_platform.a"'
               echo '            "${Skia_LIBRARY_DIR}/libfreetype.a"'
               echo '            "${Skia_LIBRARY_DIR}/libharfbuzz.a"'
               echo '            -landroid -lEGL -lGLESv2 -ldl -llog'
@@ -287,6 +288,7 @@ jobs:
               echo 'endif()'
             } > "$SDK_DIR/SkiaConfig.cmake"
           fi
+          echo "CMake 配置文件 'SkiaConfig.cmake' 已生成。"
         shell: bash
 
       - name: Create ZIP archive
