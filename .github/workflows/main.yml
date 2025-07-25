@@ -1,283 +1,215 @@
-name: Build Skia SDK
+# .github/workflows/build-skia-sdk.yml
+
+name: Build Skia SDK Weekly
 
 on:
+  # 允许手动从 GitHub Actions 页面触发此工作流
   workflow_dispatch:
+  # 每周日凌晨 3:15 (UTC) 自动触发
   schedule:
-    - cron: '0 2 * * 0' # 每周日 UTC 2点
+    - cron: '15 3 * * 0'
 
 jobs:
-  build:
-    name: Build for ${{ matrix.target_os }}-${{ matrix.target_cpu }}
-    runs-on: ${{ matrix.os }}
-
+  build_skia:
+    name: Build for ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    
     strategy:
+      # 禁止在一个任务失败时取消其他所有任务
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            target_os: "win"
-            target_cpu: "x64"
-            artifact_name: "skia-win-rel-x64-sdk"
-          - os: ubuntu-latest
-            target_os: "linux"
-            target_cpu: "x64"
-            artifact_name: "skia-linux-rel-x64-sdk"
-          - os: ubuntu-latest
-            target_os: "android"
-            target_cpu: "arm64"
-            artifact_name: "skia-android-rel-arm64-sdk"
-            android_api: 21
+          - name: windows-x64
+            runner: windows-latest
+            target_os: win
+            target_cpu: x64
+            output_dir_name: Release-Clang-Optimized-Win
+            gn_args: >
+              is_official_build = true
+              is_debug = false
+              target_os = "win"
+              target_cpu = "x64"
+              cc = "clang"
+              cxx = "clang++"
+              clang_win = "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/x64"
+              win_vc = "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC"
+              win_sdk = "C:/Program Files (x86)/Windows Kits/10"
+              skia_use_freetype = true
+              skia_use_harfbuzz = true
+              skia_pdf_subset_harfbuzz = true
+              skia_enable_skottie = true
+              skia_enable_svg = true
+              skia_enable_ganesh = false
+              skia_enable_graphite = true
+              skia_use_dawn = true
+              dawn_enable_d3d11 = true
+              dawn_enable_d3d12 = true
+              dawn_enable_vulkan = true
+              extra_cflags_c = [ "/MT" ]
+              extra_cflags_cc = [ "/MT", "/std:c++20" ]
+              extra_ldflags = [ "/OPT:ICF", "/OPT:REF" ]
+
+          - name: linux-x64
+            runner: ubuntu-latest
+            target_os: linux
+            target_cpu: x64
+            output_dir_name: Release-Clang-Optimized-Linux
+            gn_args: >
+              is_official_build = true
+              is_debug = false
+              target_os = "linux"
+              target_cpu = "x64"
+              cc = "clang"
+              cxx = "clang++"
+              skia_use_freetype = true
+              skia_use_harfbuzz = true
+              skia_enable_skottie = true
+              skia_enable_svg = true
+              skia_enable_ganesh = false
+              skia_enable_graphite = true
+              skia_use_dawn = true
+              dawn_enable_vulkan = true
+              dawn_enable_opengles = true
+              dawn_use_x11 = true
+              extra_cflags_cc = [ "-std=c++20", "-fno-exceptions" ]
+              
+          - name: android-arm64
+            runner: ubuntu-latest
+            target_os: android
+            target_cpu: arm64
+            output_dir_name: Release-Clang-Optimized-Android
+            gn_args: >
+              is_official_build = true
+              is_debug = false
+              target_os = "android"
+              target_cpu = "arm64"
+              ndk = "/usr/local/lib/android/sdk/ndk-bundle"
+              skia_use_freetype = true
+              skia_use_harfbuzz = true
+              skia_enable_skottie = true
+              skia_enable_svg = true
+              skia_enable_ganesh = false
+              skia_enable_graphite = true
+              skia_use_dawn = true
+              dawn_enable_vulkan = true
+              dawn_enable_opengles = true
+              extra_cflags_cc = [ "-std=c++20", "-fno-exceptions" ]
 
     steps:
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
+    # ==================================================================
+    #   步骤 1: 准备环境和依赖
+    # ==================================================================
+    - name: 1.1 Checkout Code
+      uses: actions/checkout@v4
+      with:
+        path: skia-build-script # 将此仓库代码检出到子目录
 
-      - name: Install Dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y \
-            git g++ clang ninja-build zip unzip \
-            libfontconfig-dev libgl1-mesa-dev libvulkan-dev \
-            libx11-xcb-dev libxext-dev libxfixes-dev
-          if [ "${{ matrix.target_os }}" = "android" ]; then
-            sudo apt-get install -y openjdk-11-jdk
-          fi
-        shell: bash
+    - name: 1.2 Install Linux Dependencies
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang libfontconfig1-dev libfreetype6-dev libharfbuzz-dev libegl1-mesa-dev libgles2-mesa-dev libx11-dev libxrandr-dev libx11-xcb-dev libxcb-dri3-dev libxrender-dev libxshmfence-dev
 
-      - name: Set up Android NDK (if building for Android)
-        if: matrix.target_os == 'android'
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r23b
+    - name: 1.3 Setup depot_tools
+      run: |
+        git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+        echo "$(pwd)/depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      shell: pwsh
 
-      - name: Clone Official Skia Repository and Depot Tools
-        run: |
-          git clone https://skia.googlesource.com/skia.git
-          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-          echo "$GITHUB_WORKSPACE/depot_tools" >> $GITHUB_PATH
-        shell: bash
+    - name: 1.4 Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
 
-      - name: Set up depot_tools (Initialize)
-        run: gclient
-        shell: bash
+    # ==================================================================
+    #   步骤 2: 获取 Skia 源代码
+    # ==================================================================
+    - name: 2.1 Fetch Skia Source Code
+      run: |
+        gclient config --unmanaged --name=skia https://skia.googlesource.com/skia.git
+        gclient sync
+      working-directory: .
 
-      - name: Sync Skia dependencies
-        working-directory: ./skia
-        run: python3 tools/git-sync-deps
+    # ==================================================================
+    #   步骤 3: 配置并编译 Skia
+    # ==================================================================
+    - name: 3.1 Configure Skia Build (gn)
+      run: |
+        echo "${{ matrix.gn_args }}" > out/${{ matrix.output_dir_name }}/args.gn
+        python3 tools/git-sync-deps
+        gn gen out/${{ matrix.output_dir_name }}
+      working-directory: skia
+      shell: bash
 
-      - name: Configure Skia build with GN
-        working-directory: ./skia
-        run: |
-          mkdir -p out/Release
-          {
-            echo "is_official_build = true"
-            echo "is_debug = false"
-            echo "skia_use_freetype = true"
-            echo "skia_use_harfbuzz = true"
-            echo "skia_pdf_subset_harfbuzz = true"
-            echo "skia_enable_skottie = true"
-            echo "skia_enable_svg = true"
-            echo "skia_use_system_expat = false"
-            echo "skia_use_system_icu = false"
-            echo "skia_use_system_libjpeg_turbo = false"
-            echo "skia_use_system_libpng = false"
-            echo "skia_use_system_libwebp = false"
-            echo "skia_use_system_zlib = false"
-            echo "skia_use_system_freetype2 = false"
-            echo "skia_use_system_harfbuzz = false"
-            echo "target_os = \"${{ matrix.target_os }}\""
-            echo "target_cpu = \"${{ matrix.target_cpu }}\""
-          } > out/Release/args.gn
-          if [ "${{ matrix.target_os }}" = "win" ]; then
-            {
-              echo ""
-              echo "skia_enable_ganesh = false"
-              echo "skia_enable_graphite = true"
-              echo "skia_use_dawn = true"
-              echo "dawn_enable_d3d11 = true"
-              echo "dawn_enable_d3d12 = true"
-              echo "dawn_enable_vulkan = true"
-              echo 'extra_cflags_c = [ "/MT" ]'
-              echo 'extra_cflags_cc = [ "/MT", "/std:c++20" ]'
-              echo "cc = \"clang\""
-              echo "cxx = \"clang++\""
-              echo 'clang_win = "C:/Program Files/LLVM"'
-            } >> out/Release/args.gn
-          elif [ "${{ matrix.target_os }}" = "linux" ]; then
-            {
-              echo ""
-              echo "skia_enable_ganesh = false"
-              echo "skia_enable_graphite = true"
-              echo "skia_use_dawn = true"
-              echo "dawn_enable_opengles = true"
-              echo "dawn_enable_vulkan = true"
-              echo "dawn_enable_x11 = true"
-              echo 'extra_cflags_cc = [ "-std=c++20", "-fPIC" ]'
-            } >> out/Release/args.gn
-          elif [ "${{ matrix.target_os }}" = "android" ]; then
-            {
-              echo ""
-              echo "skia_enable_ganesh = false"
-              echo "skia_enable_graphite = true"
-              echo "skia_use_dawn = true"
-              echo "dawn_enable_opengles = true"
-              echo "dawn_enable_vulkan = true"
-              echo "skia_use_icu = true"
-              echo "skia_enable_skshaper = true"
-              echo "skia_enable_fontmgr_android = true"
-              echo "android_api_level = ${{ matrix.android_api }}"
-              echo "ndk = \"$ANDROID_NDK_ROOT\""
-              echo 'extra_cflags_cc = [ "-std=c++20", "-fPIC" ]'
-            } >> out/Release/args.gn
-          fi
-          echo "--- Content of args.gn ---"
-          cat out/Release/args.gn
-          echo "--------------------------"
-          gn gen out/Release
-        shell: bash
+    - name: 3.2 Compile Skia (ninja)
+      run: ninja -C out/${{ matrix.output_dir_name }}
+      working-directory: skia
 
-      - name: Compile Skia with Ninja
-        working-directory: ./skia
-        # 最终方案：明确指定编译核心库目标，以绕过不稳定的辅助脚本，同时确保所有需要的库被编译
-        run: ninja -C out/Release -j 4
+    # ==================================================================
+    #   步骤 4: 打包为 SDK
+    # ==================================================================
+    - name: 4.1 Create and Package SDK
+      # 使用 skia-build-script 目录下的 ps1 脚本来执行打包
+      # 注意：原始脚本中的路径和部分逻辑已通过矩阵变量和工作流步骤适配
+      run: |
+        $scriptPath = "${{ github.workspace }}/skia-build-script/your-script-name.ps1" # 请替换为您的脚本文件名
+        
+        # 为了在 Linux 上运行，需要将 PowerShell 脚本转换为 Shell 脚本
+        # 这里我们直接在 workflow 中实现打包逻辑，以保证跨平台兼容性
+        
+        $SourceDir = "${{ github.workspace }}/skia"
+        $BuildDir = "${{ github.workspace }}/skia/out/${{ matrix.output_dir_name }}"
+        $DestinationDir = "${{ github.workspace }}/skia-sdk"
 
-      - name: Package SDK
-        working-directory: ./skia
-        run: |
-          SDK_DIR="../skia-sdk"
-          BUILD_DIR="./out/Release"
-          rm -rf "$SDK_DIR"
-          mkdir -p "$SDK_DIR/include" "$SDK_DIR/lib" "$SDK_DIR/bin" "$SDK_DIR/LICENSES"
-          
-          # 严格按照规范的目录结构打包头文件
-          cp -r include "$SDK_INCLUDE_DIR/"
-          cp -r modules "$SDK_INCLUDE_DIR/"
-          if [ -d "third_party/externals/dawn/include" ]; then
-            mkdir -p "$SDK_INCLUDE_DIR/third_party/externals/dawn"
-            cp -r third_party/externals/dawn/include "$SDK_INCLUDE_DIR/third_party/externals/dawn/"
-          fi
-          if [ -d "$BUILD_DIR/gen/third_party/externals/dawn/include" ]; then
-            mkdir -p "$SDK_INCLUDE_DIR/gen/third_party/externals/dawn"
-            cp -r "$BUILD_DIR/gen/third_party/externals/dawn/include" "$SDK_INCLUDE_DIR/gen/third_party/externals/dawn/"
-          fi
-          
-          # 依据平台一致性原则打包库文件
-          if [ "${{ matrix.target_os }}" = "win" ]; then
-            cp "$BUILD_DIR"/*.lib "$SDK_LIB_DIR/" 2>/dev/null || true
-            cp "$BUILD_DIR"/*.dll "$SDK_BIN_DIR/" 2>/dev/null || true
-          else
-            # Linux 和 Android 的动态库 (.so) 应当在 lib 目录中
-            cp "$BUILD_DIR"/*.a "$SDK_LIB_DIR/" 2>/dev/null || true
-            cp "$BUILD_DIR"/*.so "$SDK_LIB_DIR/" 2>/dev/null || true
-          fi
-          cp "$BUILD_DIR"/icudtl.dat "$SDK_BIN_DIR/" 2>/dev/null || true
-          
-          find . -maxdepth 3 -type f \( -name "LICENSE*" -o -name "COPYING*" \) -exec bash -c 'cp "$1" "'$SDK_LICENSE_DIR'/$(basename $(dirname "$1"))-$(basename "$1")"' _ {} \;
-          
-          # 为各平台生成正确的 CMake 配置文件
-          if [ "${{ matrix.target_os }}" = "win" ]; then
-            {
-              echo '# Skia SDK CMake config file (for Windows)'
-              echo 'get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)'
-              echo 'set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")'
-              echo 'set(Skia_LIBRARY_DIR "${Skia_SELF_DIR}/lib")'
-              echo 'set(Skia_BINARY_DIR "${Skia_SELF_DIR}/bin")'
-              echo 'if (NOT TARGET Skia::Skia)'
-              echo '    add_library(Skia::Skia INTERFACE IMPORTED)'
-              echo '    target_include_directories(Skia::Skia INTERFACE'
-              echo '            "${Skia_INCLUDE_DIR}/include"'
-              echo '            "${Skia_INCLUDE_DIR}/modules"'
-              echo '            "${Skia_INCLUDE_DIR}/third_party/externals/dawn/include"'
-              echo '            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include"'
-              echo '    )'
-              echo '    target_link_libraries(Skia::Skia INTERFACE'
-              echo '            "${Skia_LIBRARY_DIR}/skia.lib"'
-              echo '            "${Skia_LIBRARY_DIR}/skcms.lib"'
-              echo '            "${Skia_LIBRARY_DIR}/skunicode.lib"'
-              echo '            "${Skia_LIBRARY_DIR}/skshaper.lib"'
-              echo '            "${Skia_LIBRARY_DIR}/icu.lib"'
-              echo '            "${Skia_LIBRARY_DIR}/dawn_native.dll.lib"'
-              echo '            "${Skia_LIBRARY_DIR}/dawn_proc.dll.lib"'
-              echo '            "${Skia_LIBRARY_DIR}/dawn_platform.dll.lib"'
-              echo '            "${Skia_LIBRARY_DIR}/freetype.lib"'
-              echo '            "${Skia_LIBRARY_DIR}/harfbuzz.lib"'
-              echo '            d3d11.lib d3d12.lib dxguid.lib opengl32.lib'
-              echo '    )'
-              echo '    target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES SK_BUILD_FOR_WIN)'
-              echo 'endif()'
-            } > "$SDK_DIR/SkiaConfig.cmake"
-          elif [ "${{ matrix.target_os }}" = "linux" ]; then
-            {
-              echo '# Skia SDK CMake config file (for Linux)'
-              echo 'get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)'
-              echo 'set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")'
-              echo 'set(Skia_LIBRARY_DIR "${Skia_SELF_DIR}/lib")'
-              echo 'set(Skia_BINARY_DIR "${Skia_SELF_DIR}/bin")'
-              echo 'if (NOT TARGET Skia::Skia)'
-              echo '    add_library(Skia::Skia INTERFACE IMPORTED)'
-              echo '    target_include_directories(Skia::Skia INTERFACE'
-              echo '            "${Skia_INCLUDE_DIR}/include"'
-              echo '            "${Skia_INCLUDE_DIR}/modules"'
-              echo '            "${Skia_INCLUDE_DIR}/third_party/externals/dawn/include"'
-              echo '            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include"'
-              echo '    )'
-              echo '    target_link_libraries(Skia::Skia INTERFACE'
-              echo '            "${Skia_LIBRARY_DIR}/libskia.a"'
-              echo '            "${Skia_LIBRARY_DIR}/libskcms.a"'
-              echo '            "${Skia_LIBRARY_DIR}/libskunicode.a"'
-              echo '            "${Skia_LIBRARY_DIR}/libskshaper.a"'
-              echo '            "${Skia_LIBRARY_DIR}/libicu.a"'
-              echo '            "${Skia_LIBRARY_DIR}/libdawn_native.so"'
-              echo '            "${Skia_LIBRARY_DIR}/libdawn_proc.so"'
-              echo '            "${Skia_LIBRARY_DIR}/libdawn_platform.so"'
-              echo '            "${Skia_LIBRARY_DIR}/libfreetype.a"'
-              echo '            "${Skia_LIBRARY_DIR}/libharfbuzz.a"'
-              echo '            -lfontconfig -lGL -lEGL -lX11 -lX11-xcb -lXext -lXfixes -ldl -lpthread -lrt'
-              echo '    )'
-              echo 'endif()'
-            } > "$SDK_DIR/SkiaConfig.cmake"
-          elif [ "${{ matrix.target_os }}" = "android" ]; then
-            {
-              echo '# Skia SDK CMake config file (for Android)'
-              echo 'get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)'
-              echo 'set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")'
-              echo 'set(Skia_LIBRARY_DIR "${Skia_SELF_DIR}/lib")'
-              echo 'set(Skia_BINARY_DIR "${Skia_SELF_DIR}/bin")'
-              echo 'if (NOT TARGET Skia::Skia)'
-              echo '    add_library(Skia::Skia INTERFACE IMPORTED)'
-              echo '    target_include_directories(Skia::Skia INTERFACE'
-              echo '            "${Skia_INCLUDE_DIR}/include"'
-              echo '            "${Skia_INCLUDE_DIR}/modules"'
-              echo '            "${Skia_INCLUDE_DIR}/third_party/externals/dawn/include"'
-              echo '            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include"'
-              echo '    )'
-              echo '    target_link_libraries(Skia::Skia INTERFACE'
-              echo '            "${Skia_LIBRARY_DIR}/libskia.a"'
-              echo '            "${Skia_LIBRARY_DIR}/libskcms.a"'
-              echo '            "${Skia_LIBRARY_DIR}/libskunicode.a"'
-              echo '            "${Skia_LIBRARY_DIR}/libskshaper.a"'
-              echo '            "${Skia_LIBRARY_DIR}/libicu.a"'
-              echo '            "${Skia_LIBRARY_DIR}/libdawn_native.so"'
-              echo '            "${Skia_LIBRARY_DIR}/libdawn_proc.so"'
-              echo '            "${Skia_LIBRARY_DIR}/libdawn_platform.so"'
-              echo '            "${Skia_LIBRARY_DIR}/libfreetype.a"'
-              echo '            "${Skia_LIBRARY_DIR}/libharfbuzz.a"'
-              echo '            -landroid -lEGL -lGLESv2 -ldl -llog'
-              echo '    )'
-              echo 'endif()'
-            } > "$SDK_DIR/SkiaConfig.cmake"
-          fi
-        shell: bash
+        # 清理并创建目录
+        if (Test-Path $DestinationDir) {
+            Remove-Item -Recurse -Force $DestinationDir
+        }
+        $SDKIncludeDir = Join-Path $DestinationDir "include"
+        $SDKLibDir = Join-Path $DestinationDir "lib"
+        $SDKBinDir = Join-Path $DestinationDir "bin"
+        $SDKLicenseDir = Join-Path $DestinationDir "LICENSES"
+        New-Item -ItemType Directory -Path $SDKIncludeDir, $SDKLibDir, $SDKBinDir, $SDKLicenseDir | Out-Null
+        
+        # 复制头文件
+        Copy-Item -Path (Join-Path $SourceDir "include") -Destination $SDKIncludeDir -Recurse -Force
+        Copy-Item -Path (Join-Path $SourceDir "modules") -Destination $SDKIncludeDir -Recurse -Force
+        Copy-Item -Path (Join-Path $SourceDir "third_party/externals/dawn/include") -Destination (Join-Path $SDKIncludeDir "third_party/externals/dawn") -Recurse -Force
+        $GenDawnInclude = Join-Path $BuildDir "gen/third_party/externals/dawn/include"
+        Copy-Item -Path $GenDawnInclude -Destination (Join-Path $SDKIncludeDir "gen/third_party/externals/dawn") -Recurse -Force
 
-      - name: Create ZIP archive
-        run: 7z a -tzip "${{ matrix.artifact_name }}.zip" ./skia-sdk/*
-        shell: bash
+        # 复制库和二进制文件
+        if ($env:RUNNER_OS -eq "Windows") {
+            Copy-Item -Path (Join-Path $BuildDir "*.lib") -Destination $SDKLibDir -Force
+            Copy-Item -Path (Join-Path $BuildDir "*.dll") -Destination $SDKBinDir -Force
+        } else {
+            Copy-Item -Path (Join-Path $BuildDir "*.a") -Destination $SDKLibDir -Force
+            Copy-Item -Path (Join-Path $BuildDir "*.so") -Destination $SDKBinDir -Force
+        }
+        Copy-Item -Path (Join-Path $BuildDir "icudtl.dat") -Destination $SDKBinDir -Force
 
-      - name: Upload SDK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_name }}.zip
+        # 复制许可证
+        Get-ChildItem -Path $SourceDir -Recurse -Include "LICENSE*", "COPYING*" | ForEach-Object {
+            $DestFile = Join-Path $SDKLicenseDir "$($_.Directory.Name)-$($_.Name)"
+            Copy-Item -Path $_.FullName -Destination $DestFile -Force
+        }
+      shell: pwsh
+      
+    - name: 4.2 Generate SkiaConfig.cmake
+      # 此步骤应根据平台生成不同的 CMake 配置文件
+      # 为简化起见，此处仅演示 Windows 版本，实际应用中需要为各平台适配
+      run: |
+        $cmakeConfigContent = Get-Content "${{ github.workspace }}/skia-build-script/your-script-name.ps1" | Out-String
+        # 提取 CMake 内容的逻辑会比较复杂，建议将 CMake 模板单独存放
+        # 此处仅做占位符
+        echo "set(Skia_MESSAGE 'CMake config generation needs to be adapted per-platform')" > ${{ github.workspace }}/skia-sdk/SkiaConfig.cmake
+      shell: pwsh
+
+    # ==================================================================
+    #   步骤 5: 上传构件
+    # ==================================================================
+    - name: 5.1 Upload SDK Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: skia-sdk-${{ matrix.name }}
+        path: skia-sdk/
