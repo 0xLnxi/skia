@@ -142,7 +142,7 @@ jobs:
       - name: Compile Skia with Ninja
         working-directory: ./skia
         # 最终方案：明确指定编译核心库目标，以绕过不稳定的辅助脚本，同时确保所有需要的库被编译
-        run: ninja -C out/Release -j 4 skia modules dawn freetype harfbuzz
+        run: ninja -C out/Release -j 4
 
       - name: Package SDK
         working-directory: ./skia
