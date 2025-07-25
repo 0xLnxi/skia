@@ -41,8 +41,7 @@ jobs:
           sudo apt-get install -y \
             git g++ clang ninja-build zip unzip \
             libfontconfig-dev libgl1-mesa-dev libvulkan-dev \
-            libx11-xcb-dev # 为Dawn的X11后端添加依赖
-          # 为安卓构建安装JDK
+            libx11-xcb-dev
           if [ "${{ matrix.target_os }}" = "android" ]; then
             sudo apt-get install -y openjdk-11-jdk
           fi
@@ -52,7 +51,7 @@ jobs:
         if: matrix.target_os == 'android'
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r25c
+          ndk-version: r23b # 关键修改：使用一个兼容性更好的NDK版本
 
       - name: Clone Official Skia Repository and Depot Tools
         run: |
@@ -123,7 +122,6 @@ jobs:
           elif [ "${{ matrix.target_os }}" = "android" ]; then
             {
               echo ""
-              echo "# Android-specific arguments (more complete)"
               echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
               echo "skia_use_dawn = true"
@@ -147,17 +145,15 @@ jobs:
 
       - name: Compile Skia with Ninja
         working-directory: ./skia
+        # 关键修改：恢复完整编译
         run: ninja -C out/Release -j 4
 
       - name: Package SDK
         working-directory: ./skia
         run: |
-          # 0. 准备目标目录
           SDK_DIR="../skia-sdk"
           BUILD_DIR="./out/Release"
-          echo "步骤 4/5: 开始打包 SDK 到 '$SDK_DIR'"
           if [ -d "$SDK_DIR" ]; then
-              echo "正在清理旧的 SDK 目录..."
               rm -rf "$SDK_DIR"
           fi
           SDK_INCLUDE_DIR="$SDK_DIR/include"
@@ -165,9 +161,7 @@ jobs:
           SDK_BIN_DIR="$SDK_DIR/bin"
           SDK_LICENSE_DIR="$SDK_DIR/LICENSES"
           mkdir -p "$SDK_INCLUDE_DIR" "$SDK_LIB_DIR" "$SDK_BIN_DIR" "$SDK_LICENSE_DIR"
-          echo "SDK 目录结构创建完毕。"
-          # 1. 收录头文件 (精确翻译)
-          echo "正在收录头文件..."
+
           cp -r include "$SDK_INCLUDE_DIR/"
           cp -r modules "$SDK_INCLUDE_DIR/"
           if [ -d "third_party/externals/dawn/include" ]; then
@@ -178,9 +172,7 @@ jobs:
             mkdir -p "$SDK_INCLUDE_DIR/gen/third_party/externals/dawn"
             cp -r "$BUILD_DIR/gen/third_party/externals/dawn/include" "$SDK_INCLUDE_DIR/gen/third_party/externals/dawn/"
           fi
-          echo "头文件收录完毕。"
-          # 2. 收录库文件和二进制文件
-          echo "正在收录库文件和二进制文件..."
+
           if [ "${{ matrix.target_os }}" = "win" ]; then
             cp "$BUILD_DIR"/*.lib "$SDK_LIB_DIR/" 2>/dev/null || true
             cp "$BUILD_DIR"/*.dll "$SDK_BIN_DIR/" 2>/dev/null || true
@@ -189,13 +181,9 @@ jobs:
             cp "$BUILD_DIR"/*.so "$SDK_BIN_DIR/" 2>/dev/null || true
           fi
           cp "$BUILD_DIR"/icudtl.dat "$SDK_BIN_DIR/" 2>/dev/null || true
-          echo "库文件和二进制文件收录完毕。"
-          # 3. 收录许可证文件
-          echo "正在收录许可证文件..."
+          
           find . -maxdepth 3 -type f \( -name "LICENSE*" -o -name "COPYING*" \) -exec bash -c 'cp "$1" "'$SDK_LICENSE_DIR'/$(basename $(dirname "$1"))-$(basename "$1")"' _ {} \;
-          echo "许可证文件收录完毕。"
-          # 4. 生成特定于平台的 CMake 配置文件
-          echo "正在生成 CMake 配置文件..."
+          
           if [ "${{ matrix.target_os }}" = "win" ]; then
             {
               echo '# Skia SDK CMake config file (for Windows)'
@@ -288,7 +276,6 @@ jobs:
               echo 'endif()'
             } > "$SDK_DIR/SkiaConfig.cmake"
           fi
-          echo "CMake 配置文件 'SkiaConfig.cmake' 已生成。"
         shell: bash
 
       - name: Create ZIP archive
