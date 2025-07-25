@@ -15,7 +15,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     
     strategy:
-      # 禁止在一个任务失败时取消其他所有任务
       fail-fast: false
       matrix:
         include:
@@ -24,7 +23,8 @@ jobs:
             target_os: win
             target_cpu: x64
             output_dir_name: Release-Clang-Optimized-Win
-            gn_args: >
+            # 使用 YAML 字面量块 `|` 定义多行文本，以确保格式正确
+            gn_args: |
               is_official_build = true
               is_debug = false
               target_os = "win"
@@ -52,7 +52,7 @@ jobs:
             target_os: linux
             target_cpu: x64
             output_dir_name: Release-Clang-Optimized-Linux
-            gn_args: >
+            gn_args: |
               is_official_build = true
               is_debug = false
               target_os = "linux"
@@ -75,12 +75,12 @@ jobs:
             target_os: android
             target_cpu: arm64
             output_dir_name: Release-Clang-Optimized-Android
-            gn_args: >
+            gn_args: |
               is_official_build = true
               is_debug = false
               target_os = "android"
               target_cpu = "arm64"
-              ndk = "/usr/local/lib/android/sdk/ndk" # 使用 runner 提供的标准 NDK 路径
+              ndk = "/usr/local/lib/android/sdk/ndk"
               ndk_api = 21
               skia_use_freetype = true
               skia_use_harfbuzz = true
@@ -124,6 +124,7 @@ jobs:
 
     - name: 2.2 Configure Skia Build (gn)
       run: |
+        # 创建 args.gn 文件，内容来自矩阵变量
         echo "${{ matrix.gn_args }}" > out/${{ matrix.output_dir_name }}/args.gn
         gn gen out/${{ matrix.output_dir_name }}
       shell: bash
@@ -134,7 +135,7 @@ jobs:
     # ==================================================================
     #   步骤 3: 打包为 SDK
     # ==================================================================
-    - name: 3.1 Create and Package SDK
+    - name: 3.1 Create and Package SDK Files
       run: |
         $SourceDir = "${{ github.workspace }}"
         $BuildDir = "${{ github.workspace }}/out/${{ matrix.output_dir_name }}"
@@ -147,14 +148,14 @@ jobs:
         $SDKIncludeDir = Join-Path $DestinationDir "include"
         $SDKLibDir = Join-Path $DestinationDir "lib"
         $SDKBinDir = Join-Path $DestinationDir "bin"
-        New-Item -ItemType Directory -Path $SDKIncludeDir, $SDKLibDir, $SDKBinDir | Out-Null
+        $SDKLicenseDir = Join-Path $DestinationDir "LICENSES"
+        New-Item -ItemType Directory -Path $SDKIncludeDir, $SDKLibDir, $SDKBinDir, $SDKLicenseDir | Out-Null
         
         # 复制头文件
         Copy-Item -Path (Join-Path $SourceDir "include") -Destination $SDKIncludeDir -Recurse -Force
         Copy-Item -Path (Join-Path $SourceDir "modules") -Destination $SDKIncludeDir -Recurse -Force
         Copy-Item -Path (Join-Path $SourceDir "third_party/externals/dawn/include") -Destination (Join-Path $SDKIncludeDir "third_party/externals/dawn") -Recurse -Force
-        $GenDawnInclude = Join-Path $BuildDir "gen/third_party/externals/dawn/include"
-        Copy-Item -Path $GenDawnInclude -Destination (Join-Path $SDKIncludeDir "gen/third_party/externals/dawn") -Recurse -Force
+        Copy-Item -Path (Join-Path $BuildDir "gen/third_party/externals/dawn/include") -Destination (Join-Path $SDKIncludeDir "gen/third_party/externals/dawn") -Recurse -Force
 
         # 复制库和二进制文件
         if ($env:RUNNER_OS -eq "Windows") {
@@ -165,21 +166,21 @@ jobs:
             Get-ChildItem -Path $BuildDir -Filter "*.so" | Copy-Item -Destination $SDKBinDir
         }
         Copy-Item -Path (Join-Path $BuildDir "icudtl.dat") -Destination $SDKBinDir -Force
+        
+        # 复制许可证文件
+        Get-ChildItem -Path $SourceDir -Recurse -Include "LICENSE*", "COPYING*" | ForEach-Object {
+            $DestFile = Join-Path $SDKLicenseDir "$($_.Directory.Name)-$($_.Name)"
+            Copy-Item -Path $_.FullName -Destination $DestFile -Force
+        }
       shell: pwsh
-
-    - name: 3.2 Generate SkiaConfig.cmake
-      uses: jsdaniell/create-json@v1.2.2
-      with:
-        name: SkiaConfig.cmake
-        json: ${{ toJson(steps.cmake_script.outputs) }}
-        dir: 'skia-sdk/'
-      id: write_cmake_file
-
-    - name: 3.3 Set Windows CMake Script
+      
+    - name: 3.2 Generate SkiaConfig.cmake (Windows)
       if: matrix.target_os == 'win'
-      id: cmake_script
+      shell: pwsh
       run: |
+        # 使用 PowerShell 的 Here-String (`@''@`) 定义多行内容
         $content = @'
+        # Skia SDK CMake Config (Windows)
         get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
         add_library(Skia::Skia INTERFACE IMPORTED)
         target_include_directories(Skia::Skia INTERFACE 
@@ -194,15 +195,17 @@ jobs:
             "${Skia_SELF_DIR}/lib/dawn_proc.dll.lib"
             d3d11.lib d3d12.lib dxguid.lib)
         target_compile_definitions(Skia::Skia INTERFACE SK_BUILD_FOR_WIN)
+        message(STATUS "Found Skia SDK for Windows")
         '@
-        echo "cmake_content=$content" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-      shell: pwsh
+        Set-Content -Path "${{ github.workspace }}/skia-sdk/SkiaConfig.cmake" -Value $content
 
-    - name: 3.4 Set Linux CMake Script
+    - name: 3.3 Generate SkiaConfig.cmake (Linux)
       if: matrix.target_os == 'linux'
-      id: cmake_script
+      shell: bash
       run: |
-        content='''
+        # 使用 Bash 的 Here-Document (`<<'EOF'`) 定义多行内容
+        cat << 'EOF' > ${{ github.workspace }}/skia-sdk/SkiaConfig.cmake
+        # Skia SDK CMake Config (Linux)
         get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
         add_library(Skia::Skia INTERFACE IMPORTED)
         target_include_directories(Skia::Skia INTERFACE 
@@ -213,35 +216,33 @@ jobs:
             "${Skia_SELF_DIR}/lib/libskia.a" 
             "${Skia_SELF_DIR}/lib/libskshaper.a" 
             "${Skia_SELF_DIR}/lib/libskunicode.a" 
-            "${Skia_SELF_DIR}/lib/libdawn_native.so" 
-            "${Skia_SELF_DIR}/lib/libdawn_proc.so"
+            "${Skia_SELF_DIR}/bin/libdawn_native.so" 
+            "${Skia_SELF_DIR}/bin/libdawn_proc.so"
             fontconfig freetype harfbuzz EGL GLESv2 X11 dl pthread)
-        '''
-        echo "cmake_content=$content" >> $GITHUB_OUTPUT
-      shell: bash
+        message(STATUS "Found Skia SDK for Linux")
+        EOF
 
-    - name: 3.5 Set Android CMake Script
+    - name: 3.4 Generate SkiaConfig.cmake (Android)
       if: matrix.target_os == 'android'
-      id: cmake_script
+      shell: bash
       run: |
-        content='''
+        cat << 'EOF' > ${{ github.workspace }}/skia-sdk/SkiaConfig.cmake
+        # Skia SDK CMake Config (Android)
         get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
         add_library(Skia::Skia INTERFACE IMPORTED)
         target_include_directories(Skia::Skia INTERFACE 
             "${Skia_SELF_DIR}/include" 
             "${Skia_SELF_DIR}/include/third_party/externals/dawn" 
             "${Skia_SELF_DIR}/gen/third_party/externals/dawn")
-        # For Android, it's common to link static libraries
         target_link_libraries(Skia::Skia INTERFACE 
             "${Skia_SELF_DIR}/lib/libskia.a" 
             "${Skia_SELF_DIR}/lib/libskshaper.a" 
             "${Skia_SELF_DIR}/lib/libskunicode.a" 
-            "${Skia_SELF_DIR}/lib/libdawn_native.so" 
-            "${Skia_SELF_DIR}/lib/libdawn_proc.so"
+            "${Skia_SELF_DIR}/bin/libdawn_native.so" 
+            "${Skia_SELF_DIR}/bin/libdawn_proc.so"
             log android EGL GLESv2)
-        '''
-        echo "cmake_content=$content" >> $GITHUB_OUTPUT
-      shell: bash
+        message(STATUS "Found Skia SDK for Android")
+        EOF
 
     # ==================================================================
     #   步骤 4: 上传构件
