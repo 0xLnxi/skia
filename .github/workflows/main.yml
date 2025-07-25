@@ -75,7 +75,6 @@ jobs:
           {
             echo "is_official_build = true"
             echo "is_debug = false"
-            echo "pa_is_component_build = false" # 强制 partition_alloc 静态链接, 解决 component build 错误
             echo "skia_use_freetype = true"
             echo "skia_use_harfbuzz = true"
             echo "skia_pdf_subset_harfbuzz = true"
@@ -95,7 +94,6 @@ jobs:
           if [ "${{ matrix.target_os }}" = "win" ]; then
             {
               echo ""
-              echo "is_component_build = true"
               echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
               echo "skia_use_dawn = true"
@@ -111,7 +109,6 @@ jobs:
           elif [ "${{ matrix.target_os }}" = "linux" ]; then
             {
               echo ""
-              echo "is_component_build = true"
               echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
               echo "skia_use_dawn = true"
@@ -123,7 +120,6 @@ jobs:
           elif [ "${{ matrix.target_os }}" = "android" ]; then
             {
               echo ""
-              echo "is_component_build = true"
               echo "skia_enable_ganesh = false"
               echo "skia_enable_graphite = true"
               echo "skia_use_dawn = true"
