@@ -21,28 +21,40 @@ jobs:
             target_os: win
             target_cpu: x64
             output_dir_name: Release-Clang-Optimized-Win
+            # ✅ GN ARGS: 严格参照 PS1 脚本配置
             gn_args: |
               is_official_build = true
               is_debug = false
-              target_os = "win"
-              target_cpu = "x64"
-              cc = "clang"
-              cxx = "clang++"
-              # ✅ FIX: 为所有路径值添加双引号，以符合 GN 语法规范
-              clang_win = "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/x64"
-              win_vc = "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC"
-              win_sdk = "C:/Program Files (x86)/Windows Kits/10"
+              is_trivial_abi = false
               skia_use_freetype = true
               skia_use_harfbuzz = true
+              skia_pdf_subset_harfbuzz = true
               skia_enable_skottie = true
               skia_enable_svg = true
+              skia_enable_ganesh = true
               skia_enable_graphite = true
               skia_use_dawn = true
               dawn_enable_d3d11 = true
               dawn_enable_d3d12 = true
               dawn_enable_vulkan = true
+              skia_use_system_expat = false
+              skia_use_system_icu = false
+              skia_use_system_libjpeg_turbo = false
+              skia_use_system_libpng = false
+              skia_use_system_libwebp = false
+              skia_use_system_zlib = false
+              skia_use_system_freetype2 = false
+              skia_use_system_harfbuzz = false
+              target_os = "win"
+              target_cpu = "x64"
+              cc = "clang"
+              cxx = "clang++"
+              clang_win = "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/x64"
+              win_vc = "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC"
+              win_sdk = "C:/Program Files (x86)/Windows Kits/10"
+              win_sdk_version = "10.0.22621.0"
               extra_cflags_c = [ "/MT" ]
-              extra_cflags_cc = [ "/MT", "/std:c++20" ]
+              extra_cflags_cc = [ "/MT", "-D_USE_MATH_DEFINES", "/std:c++20" ]
               extra_ldflags = [ "/OPT:ICF", "/OPT:REF" ]
 
           - name: linux-x64
@@ -50,46 +62,69 @@ jobs:
             target_os: linux
             target_cpu: x64
             output_dir_name: Release-Clang-Optimized-Linux
+            # ✅ GN ARGS: 参照 PS1 脚本逻辑适配 Linux
             gn_args: |
               is_official_build = true
               is_debug = false
-              target_os = "linux"
-              target_cpu = "x64"
-              cc = "clang"
-              cxx = "clang++"
+              is_trivial_abi = false
               skia_use_freetype = true
               skia_use_harfbuzz = true
+              skia_pdf_subset_harfbuzz = true
               skia_enable_skottie = true
               skia_enable_svg = true
+              skia_enable_ganesh = true
               skia_enable_graphite = true
               skia_use_dawn = true
               dawn_enable_vulkan = true
               dawn_enable_opengles = true
               dawn_use_x11 = true
-              extra_cflags_cc = [ "-std=c++20", "-fno-exceptions" ]
+              skia_use_system_expat = false
+              skia_use_system_icu = false
+              skia_use_system_libjpeg_turbo = false
+              skia_use_system_libpng = false
+              skia_use_system_libwebp = false
+              skia_use_system_zlib = false
+              skia_use_system_freetype2 = false
+              skia_use_system_harfbuzz = false
+              target_os = "linux"
+              target_cpu = "x64"
+              cc = "clang"
+              cxx = "clang++"
+              extra_cflags_cc = [ "-std=c++20", "-D_USE_MATH_DEFINES", "-fno-exceptions" ]
               
           - name: android-arm64
             runner: ubuntu-latest
             target_os: android
             target_cpu: arm64
             output_dir_name: Release-Clang-Optimized-Android
+            # ✅ GN ARGS: 参照 PS1 脚本逻辑适配 Android
             gn_args: |
               is_official_build = true
               is_debug = false
-              target_os = "android"
-              target_cpu = "arm64"
-              # ✅ FIX: 为路径值添加双引号
-              ndk = "/usr/local/lib/android/sdk/ndk"
-              ndk_api = 21
+              is_trivial_abi = false
               skia_use_freetype = true
               skia_use_harfbuzz = true
+              skia_pdf_subset_harfbuzz = true
               skia_enable_skottie = true
               skia_enable_svg = true
+              skia_enable_ganesh = true
               skia_enable_graphite = true
               skia_use_dawn = true
               dawn_enable_vulkan = true
               dawn_enable_opengles = true
-              extra_cflags_cc = [ "-std=c++20", "-fno-exceptions", "-D_LIBCPP_HAS_NO_THREADS" ]
+              skia_use_system_expat = false
+              skia_use_system_icu = false
+              skia_use_system_libjpeg_turbo = false
+              skia_use_system_libpng = false
+              skia_use_system_libwebp = false
+              skia_use_system_zlib = false
+              skia_use_system_freetype2 = false
+              skia_use_system_harfbuzz = false
+              target_os = "android"
+              target_cpu = "arm64"
+              ndk = "/usr/local/lib/android/sdk/ndk"
+              ndk_api = 21
+              extra_cflags_cc = [ "-std=c++20", "-D_USE_MATH_DEFINES", "-fno-exceptions", "-D_LIBCPP_HAS_NO_THREADS" ]
 
     steps:
     # ==================================================================
@@ -122,18 +157,12 @@ jobs:
       run: python3 tools/git-sync-deps
 
     - name: 2.2 Configure Skia Build (gn)
-      # ✅ FIX: 使用 env 将变量安全地传递给脚本，防止特殊字符导致语法错误
       env:
         GN_ARGS_CONTENT: ${{ matrix.gn_args }}
       shell: bash
       run: |
-        # 确保输出目录存在
         mkdir -p out/${{ matrix.output_dir_name }}
-        
-        # 将环境变量的内容写入 args.gn 文件
         echo "$GN_ARGS_CONTENT" > out/${{ matrix.output_dir_name }}/args.gn
-        
-        # 生成构建文件
         gn gen out/${{ matrix.output_dir_name }}
 
     - name: 2.3 Compile Skia (ninja)
@@ -181,23 +210,29 @@ jobs:
       if: matrix.target_os == 'win'
       shell: pwsh
       run: |
+        # ✅ CMAKE: 严格参照 PS1 脚本生成的库列表
         $content = @'
-        # Skia SDK CMake Config (Windows)
         get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
         add_library(Skia::Skia INTERFACE IMPORTED)
-        target_include_directories(Skia::Skia INTERFACE 
-            "${Skia_SELF_DIR}/include" 
-            "${Skia_SELF_DIR}/include/third_party/externals/dawn" 
+        target_include_directories(Skia::Skia INTERFACE
+            "${Skia_SELF_DIR}/include"
+            "${Skia_SELF_DIR}/include/third_party/externals/dawn"
             "${Skia_SELF_DIR}/gen/third_party/externals/dawn")
-        target_link_libraries(Skia::Skia INTERFACE 
-            "${Skia_SELF_DIR}/lib/skia.lib" 
-            "${Skia_SELF_DIR}/lib/skshaper.lib" 
-            "${Skia_SELF_DIR}/lib/skunicode.lib" 
-            "${Skia_SELF_DIR}/lib/dawn_native.dll.lib" 
+        target_link_libraries(Skia::Skia INTERFACE
+            "${Skia_SELF_DIR}/lib/skia.lib"
+            "${Skia_SELF_DIR}/lib/allocator_core.lib"
+            "${Skia_SELF_DIR}/lib/allocator_base.lib"
+            "${Skia_SELF_DIR}/lib/allocator_shim.lib"
+            "${Skia_SELF_DIR}/lib/raw_ptr.lib"
+            "${Skia_SELF_DIR}/lib/zlib.lib"
+            "${Skia_SELF_DIR}/lib/dawn_native.dll.lib"
             "${Skia_SELF_DIR}/lib/dawn_proc.dll.lib"
-            d3d11.lib d3d12.lib dxguid.lib)
-        target_compile_definitions(Skia::Skia INTERFACE SK_BUILD_FOR_WIN)
-        message(STATUS "Found Skia SDK for Windows")
+            "${Skia_SELF_DIR}/lib/dawn_platform.dll.lib"
+            "${Skia_SELF_DIR}/lib/freetype2.lib"
+            "${Skia_SELF_DIR}/lib/harfbuzz.lib"
+            d3d11.lib d3d12.lib dxguid.lib onecore.lib)
+        target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES SK_BUILD_FOR_WIN)
+        message(STATUS "Found Skia SDK for Windows (Strict)")
         '@
         Set-Content -Path "${{ github.workspace }}/skia-sdk/SkiaConfig.cmake" -Value $content
 
@@ -205,44 +240,56 @@ jobs:
       if: matrix.target_os == 'linux'
       shell: bash
       run: |
+        # ✅ CMAKE: 参照 PS1 脚本逻辑适配 Linux
         cat << 'EOF' > ${{ github.workspace }}/skia-sdk/SkiaConfig.cmake
-        # Skia SDK CMake Config (Linux)
         get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
         add_library(Skia::Skia INTERFACE IMPORTED)
-        target_include_directories(Skia::Skia INTERFACE 
-            "${Skia_SELF_DIR}/include" 
-            "${Skia_SELF_DIR}/include/third_party/externals/dawn" 
+        target_include_directories(Skia::Skia INTERFACE
+            "${Skia_SELF_DIR}/include"
+            "${Skia_SELF_DIR}/include/third_party/externals/dawn"
             "${Skia_SELF_DIR}/gen/third_party/externals/dawn")
-        target_link_libraries(Skia::Skia INTERFACE 
-            "${Skia_SELF_DIR}/lib/libskia.a" 
-            "${Skia_SELF_DIR}/lib/libskshaper.a" 
-            "${Skia_SELF_DIR}/lib/libskunicode.a" 
-            "${Skia_SELF_DIR}/bin/libdawn_native.so" 
+        target_link_libraries(Skia::Skia INTERFACE
+            "${Skia_SELF_DIR}/lib/libskia.a"
+            "${Skia_SELF_DIR}/lib/liballocator_core.a"
+            "${Skia_SELF_DIR}/lib/liballocator_base.a"
+            "${Skia_SELF_DIR}/lib/liballocator_shim.a"
+            "${Skia_SELF_DIR}/lib/libraw_ptr.a"
+            "${Skia_SELF_DIR}/lib/libzlib.a"
+            "${Skia_SELF_DIR}/bin/libdawn_native.so"
             "${Skia_SELF_DIR}/bin/libdawn_proc.so"
-            fontconfig freetype harfbuzz EGL GLESv2 X11 dl pthread)
-        message(STATUS "Found Skia SDK for Linux")
+            "${Skia_SELF_DIR}/lib/libfreetype2.a"
+            "${Skia_SELF_DIR}/lib/libharfbuzz.a"
+            fontconfig dl pthread EGL GLESv2 X11)
+        target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES)
+        message(STATUS "Found Skia SDK for Linux (Strict)")
         EOF
 
     - name: 3.4 Generate SkiaConfig.cmake (Android)
       if: matrix.target_os == 'android'
       shell: bash
       run: |
+        # ✅ CMAKE: 参照 PS1 脚本逻辑适配 Android
         cat << 'EOF' > ${{ github.workspace }}/skia-sdk/SkiaConfig.cmake
-        # Skia SDK CMake Config (Android)
         get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
         add_library(Skia::Skia INTERFACE IMPORTED)
-        target_include_directories(Skia::Skia INTERFACE 
-            "${Skia_SELF_DIR}/include" 
-            "${Skia_SELF_DIR}/include/third_party/externals/dawn" 
+        target_include_directories(Skia::Skia INTERFACE
+            "${Skia_SELF_DIR}/include"
+            "${Skia_SELF_DIR}/include/third_party/externals/dawn"
             "${Skia_SELF_DIR}/gen/third_party/externals/dawn")
-        target_link_libraries(Skia::Skia INTERFACE 
-            "${Skia_SELF_DIR}/lib/libskia.a" 
-            "${Skia_SELF_DIR}/lib/libskshaper.a" 
-            "${Skia_SELF_DIR}/lib/libskunicode.a" 
-            "${Skia_SELF_DIR}/bin/libdawn_native.so" 
+        target_link_libraries(Skia::Skia INTERFACE
+            "${Skia_SELF_DIR}/lib/libskia.a"
+            "${Skia_SELF_DIR}/lib/liballocator_core.a"
+            "${Skia_SELF_DIR}/lib/liballocator_base.a"
+            "${Skia_SELF_DIR}/lib/liballocator_shim.a"
+            "${Skia_SELF_DIR}/lib/libraw_ptr.a"
+            "${Skia_SELF_DIR}/lib/libzlib.a"
+            "${Skia_SELF_DIR}/bin/libdawn_native.so"
             "${Skia_SELF_DIR}/bin/libdawn_proc.so"
+            "${Skia_SELF_DIR}/lib/libfreetype2.a"
+            "${Skia_SELF_DIR}/lib/libharfbuzz.a"
             log android EGL GLESv2)
-        message(STATUS "Found Skia SDK for Android")
+        target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES)
+        message(STATUS "Found Skia SDK for Android (Strict)")
         EOF
 
     # ==================================================================
