@@ -121,6 +121,8 @@ jobs:
               target_cpu = "arm64"
               ndk = "/usr/local/lib/android/sdk/ndk"
               ndk_api = 21
+              # ✅ FIX: Disable building NDK's cpu-features from source for compatibility.
+              skia_use_ndk_cpu_features = false
               extra_cflags_cc = [ "-std=c++20", "-D_USE_MATH_DEFINES", "-fno-exceptions", "-D_LIBCPP_HAS_NO_THREADS" ]
 
     steps:
@@ -141,14 +143,8 @@ jobs:
       run: |
         git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
         DEPOT_TOOLS_PATH=$(pwd)/depot_tools
-        
-        # 为后续步骤更新 PATH
         echo "$DEPOT_TOOLS_PATH" >> $GITHUB_PATH
-        
-        # ✅ FIX: 为当前步骤更新 PATH
         export PATH="$DEPOT_TOOLS_PATH:$PATH"
-        
-        # 运行 gclient 来触发其内部的初始化 (bootstrap) 过程
         gclient --version
 
     - name: 1.4 Setup Python
