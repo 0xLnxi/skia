@@ -3,9 +3,7 @@
 name: Build Skia SDK Weekly
 
 on:
-  # 允许手动从 GitHub Actions 页面触发此工作流
   workflow_dispatch:
-  # 每周日凌晨 3:15 (UTC) 自动触发
   schedule:
     - cron: '15 3 * * 0'
 
@@ -23,7 +21,6 @@ jobs:
             target_os: win
             target_cpu: x64
             output_dir_name: Release-Clang-Optimized-Win
-            # 使用 YAML 字面量块 `|` 定义多行文本，以确保格式正确
             gn_args: |
               is_official_build = true
               is_debug = false
@@ -94,7 +91,7 @@ jobs:
 
     steps:
     # ==================================================================
-    #   步骤 1: 准备环境 (Checkout, Dependencies, Tools)
+    #   步骤 1: 准备环境
     # ==================================================================
     - name: 1.1 Checkout Skia Source Code (This Repo)
       uses: actions/checkout@v4
@@ -108,7 +105,7 @@ jobs:
     - name: 1.3 Setup depot_tools
       run: |
         git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-        echo "$(pwd)/depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+        echo "$(pwd)/depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       shell: pwsh
 
     - name: 1.4 Setup Python
@@ -123,11 +120,16 @@ jobs:
       run: python3 tools/git-sync-deps
 
     - name: 2.2 Configure Skia Build (gn)
+      shell: bash
       run: |
+        # ✅ FIX: 确保输出目录存在，以防写入失败
+        mkdir -p out/${{ matrix.output_dir_name }}
+        
         # 创建 args.gn 文件，内容来自矩阵变量
         echo "${{ matrix.gn_args }}" > out/${{ matrix.output_dir_name }}/args.gn
+        
+        # 生成构建文件
         gn gen out/${{ matrix.output_dir_name }}
-      shell: bash
 
     - name: 2.3 Compile Skia (ninja)
       run: ninja -C out/${{ matrix.output_dir_name }}
@@ -136,12 +138,12 @@ jobs:
     #   步骤 3: 打包为 SDK
     # ==================================================================
     - name: 3.1 Create and Package SDK Files
+      shell: pwsh
       run: |
         $SourceDir = "${{ github.workspace }}"
         $BuildDir = "${{ github.workspace }}/out/${{ matrix.output_dir_name }}"
         $DestinationDir = "${{ github.workspace }}/skia-sdk"
 
-        # 清理并创建目录结构
         if (Test-Path $DestinationDir) {
             Remove-Item -Recurse -Force $DestinationDir
         }
@@ -151,13 +153,11 @@ jobs:
         $SDKLicenseDir = Join-Path $DestinationDir "LICENSES"
         New-Item -ItemType Directory -Path $SDKIncludeDir, $SDKLibDir, $SDKBinDir, $SDKLicenseDir | Out-Null
         
-        # 复制头文件
         Copy-Item -Path (Join-Path $SourceDir "include") -Destination $SDKIncludeDir -Recurse -Force
         Copy-Item -Path (Join-Path $SourceDir "modules") -Destination $SDKIncludeDir -Recurse -Force
         Copy-Item -Path (Join-Path $SourceDir "third_party/externals/dawn/include") -Destination (Join-Path $SDKIncludeDir "third_party/externals/dawn") -Recurse -Force
         Copy-Item -Path (Join-Path $BuildDir "gen/third_party/externals/dawn/include") -Destination (Join-Path $SDKIncludeDir "gen/third_party/externals/dawn") -Recurse -Force
 
-        # 复制库和二进制文件
         if ($env:RUNNER_OS -eq "Windows") {
             Get-ChildItem -Path $BuildDir -Filter "*.lib" | Copy-Item -Destination $SDKLibDir
             Get-ChildItem -Path $BuildDir -Filter "*.dll" | Copy-Item -Destination $SDKBinDir
@@ -167,18 +167,15 @@ jobs:
         }
         Copy-Item -Path (Join-Path $BuildDir "icudtl.dat") -Destination $SDKBinDir -Force
         
-        # 复制许可证文件
         Get-ChildItem -Path $SourceDir -Recurse -Include "LICENSE*", "COPYING*" | ForEach-Object {
             $DestFile = Join-Path $SDKLicenseDir "$($_.Directory.Name)-$($_.Name)"
             Copy-Item -Path $_.FullName -Destination $DestFile -Force
         }
-      shell: pwsh
       
     - name: 3.2 Generate SkiaConfig.cmake (Windows)
       if: matrix.target_os == 'win'
       shell: pwsh
       run: |
-        # 使用 PowerShell 的 Here-String (`@''@`) 定义多行内容
         $content = @'
         # Skia SDK CMake Config (Windows)
         get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
@@ -203,7 +200,6 @@ jobs:
       if: matrix.target_os == 'linux'
       shell: bash
       run: |
-        # 使用 Bash 的 Here-Document (`<<'EOF'`) 定义多行内容
         cat << 'EOF' > ${{ github.workspace }}/skia-sdk/SkiaConfig.cmake
         # Skia SDK CMake Config (Linux)
         get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
