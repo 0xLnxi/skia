@@ -28,6 +28,7 @@ jobs:
               target_cpu = "x64"
               cc = "clang"
               cxx = "clang++"
+              # ✅ FIX: 为所有路径值添加双引号，以符合 GN 语法规范
               clang_win = "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/Llvm/x64"
               win_vc = "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC"
               win_sdk = "C:/Program Files (x86)/Windows Kits/10"
@@ -77,6 +78,7 @@ jobs:
               is_debug = false
               target_os = "android"
               target_cpu = "arm64"
+              # ✅ FIX: 为路径值添加双引号
               ndk = "/usr/local/lib/android/sdk/ndk"
               ndk_api = 21
               skia_use_freetype = true
@@ -120,19 +122,22 @@ jobs:
       run: python3 tools/git-sync-deps
 
     - name: 2.2 Configure Skia Build (gn)
+      # ✅ FIX: 使用 env 将变量安全地传递给脚本，防止特殊字符导致语法错误
+      env:
+        GN_ARGS_CONTENT: ${{ matrix.gn_args }}
       shell: bash
       run: |
-        # ✅ FIX: 确保输出目录存在，以防写入失败
+        # 确保输出目录存在
         mkdir -p out/${{ matrix.output_dir_name }}
         
-        # 创建 args.gn 文件，内容来自矩阵变量
-        echo "${{ matrix.gn_args }}" > out/${{ matrix.output_dir_name }}/args.gn
+        # 将环境变量的内容写入 args.gn 文件
+        echo "$GN_ARGS_CONTENT" > out/${{ matrix.output_dir_name }}/args.gn
         
         # 生成构建文件
         gn gen out/${{ matrix.output_dir_name }}
 
     - name: 2.3 Compile Skia (ninja)
-      run: ninja -C out/${{ matrix.output_dir_name }}
+      run: ninja -C out/${{ matrix.output_dir_name }} -j4
 
     # ==================================================================
     #   步骤 3: 打包为 SDK
