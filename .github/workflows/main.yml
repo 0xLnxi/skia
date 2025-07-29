@@ -119,10 +119,8 @@ jobs:
               skia_use_system_harfbuzz = false
               target_os = "android"
               target_cpu = "arm64"
-              # ✅ FIX: ndk 路径不应使用 "//" 前缀。
-              # gn 会将 "android-ndk-r21e" 解释为相对于源码根目录的路径，并正确生成绝对路径。
-              # 使用 "//" 会导致 gn 生成一个无效的绝对路径 "//android-ndk-r21e"，shell 无法识别。
-              ndk = "android-ndk-r21e"
+              # ✅ FIX: 使用 ANDROID_NDK_ROOT 环境变量代替 gn 参数 "ndk"。
+              # 这是更标准、更稳健的方式，可以避免构建脚本中潜在的路径拼接问题。
               ndk_api = 21
               extra_cflags_cc = [ "-std=c++20", "-D_USE_MATH_DEFINES", "-fno-exceptions", "-D_LIBCPP_HAS_NO_THREADS" ]
 
@@ -153,6 +151,7 @@ jobs:
       with:
         python-version: '3.x'
         
+    # ✅ FIX: 下载 NDK 后，将其路径设置为 ANDROID_NDK_ROOT 环境变量
     - name: 1.5 Install Specific Android NDK (r21e)
       if: matrix.target_os == 'android'
       shell: bash
@@ -160,7 +159,9 @@ jobs:
         echo "Downloading compatible Android NDK r21e..."
         wget https://dl.google.com/android/repository/android-ndk-r21e-linux-x86_64.zip -O ndk.zip
         unzip -q ndk.zip
-        echo "NDK r21e installed in $(pwd)/android-ndk-r21e"
+        NDK_PATH="$(pwd)/android-ndk-r21e"
+        echo "NDK r21e installed in ${NDK_PATH}"
+        echo "ANDROID_NDK_ROOT=${NDK_PATH}" >> $GITHUB_ENV
 
     # ==================================================================
     #   步骤 2: 同步依赖项并编译
