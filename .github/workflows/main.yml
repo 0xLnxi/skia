@@ -119,8 +119,6 @@ jobs:
               skia_use_system_harfbuzz = false
               target_os = "android"
               target_cpu = "arm64"
-              # ✅ FIX 2/2: 移除此处的 ndk="..." 参数。
-              # gn 会自动识别通过步骤 1.5 设置的 ANDROID_NDK_ROOT 环境变量。
               ndk_api = 21
               extra_cflags_cc = [ "-std=c++20", "-D_USE_MATH_DEFINES", "-fno-exceptions", "-D_LIBCPP_HAS_NO_THREADS" ]
 
@@ -142,19 +140,18 @@ jobs:
       run: |
         git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
         echo "$(pwd)/depot_tools" >> $GITHUB_PATH
-
+        
     - name: 1.4 Setup Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.x'
         
-    # ✅ FIX 1/2: 新增步骤，为 Android 构建准备 NDK 并设置标准环境变量。
     - name: 1.5 Install Specific Android NDK (r21e)
       if: matrix.target_os == 'android'
       shell: bash
       run: |
         echo "Downloading compatible Android NDK r21e..."
-        wget -q https://dl.google.com/android/repository/android-ndk-r21e-linux-x86_64.zip -O ndk.zip
+        wget https://dl.google.com/android/repository/android-ndk-r21e-linux-x86_64.zip -O ndk.zip
         unzip -q ndk.zip
         NDK_PATH="$(pwd)/android-ndk-r21e"
         echo "NDK r21e installed in ${NDK_PATH}"
@@ -166,7 +163,6 @@ jobs:
     - name: 2.1 Sync Skia Dependencies (DEPS)
       run: python3 tools/git-sync-deps
 
-    # 步骤 2.2 已恢复为你原来的版本，这完全没有问题。
     - name: 2.2 Configure Skia Build (gn)
       env:
         GN_ARGS_CONTENT: ${{ matrix.gn_args }}
@@ -183,6 +179,7 @@ jobs:
     #   步骤 3: 打包为 SDK
     # ==================================================================
     - name: 3.1 Create and Package SDK Files
+      if: success()
       shell: pwsh
       run: |
         $SourceDir = "${{ github.workspace }}"
@@ -210,15 +207,15 @@ jobs:
             Get-ChildItem -Path $BuildDir -Filter "*.a" | Copy-Item -Destination $SDKLibDir
             Get-ChildItem -Path $BuildDir -Filter "*.so" | Copy-Item -Destination $SDKBinDir
         }
-        Copy-Item -Path (Join-Path $BuildDir "icudtl.dat") -Destination $SDKBinDir -ErrorAction SilentlyContinue -Force
+        Copy-Item -Path (Join-Path $BuildDir "icudtl.dat") -Destination $SDKBinDir -ErrorAction SilentlyContinue
         
         Get-ChildItem -Path $SourceDir -Recurse -Include "LICENSE*", "COPYING*" | ForEach-Object {
             $DestFile = Join-Path $SDKLicenseDir "$($_.Directory.Name)-$($_.Name)"
             Copy-Item -Path $_.FullName -Destination $DestFile -Force
         }
-    
+
     - name: 3.2 Generate SkiaConfig.cmake (Windows)
-      if: matrix.target_os == 'win'
+      if: success() && matrix.target_os == 'win'
       shell: pwsh
       run: |
         $content = @'
@@ -247,7 +244,7 @@ jobs:
         Set-Content -Path "${{ github.workspace }}/skia-sdk/SkiaConfig.cmake" -Value $content
 
     - name: 3.3 Generate SkiaConfig.cmake (Linux)
-      if: matrix.target_os == 'linux'
+      if: success() && matrix.target_os == 'linux'
       shell: bash
       run: |
         cat << 'EOF' > ${{ github.workspace }}/skia-sdk/SkiaConfig.cmake
@@ -274,7 +271,7 @@ jobs:
         EOF
 
     - name: 3.4 Generate SkiaConfig.cmake (Android)
-      if: matrix.target_os == 'android'
+      if: success() && matrix.target_os == 'android'
       shell: bash
       run: |
         cat << 'EOF' > ${{ github.workspace }}/skia-sdk/SkiaConfig.cmake
@@ -304,6 +301,7 @@ jobs:
     #   步骤 4: 上传构件
     # ==================================================================
     - name: 4.1 Upload SDK Artifact
+      if: success()
       uses: actions/upload-artifact@v4
       with:
         name: skia-sdk-${{ matrix.name }}
