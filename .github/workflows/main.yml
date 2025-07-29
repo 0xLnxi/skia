@@ -147,14 +147,15 @@ jobs:
       - name: 1.4 Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          # 固定 Python 版本以确保稳定性
+          python-version: '3.12'
 
-      - name: 1.5 Setup Android NDK Path
+      - name: 1.5 Setup Android NDK
         if: matrix.target_os == 'android'
-        shell: bash
-        run: |
-          echo "ANDROID_NDK_ROOT=${ANDROID_NDK_LATEST_HOME}" >> $GITHUB_ENV
-          echo "NDK root set to: ${ANDROID_NDK_LATEST_HOME}"
+        uses: ndk-actions/setup-ndk@v1.2.0
+        with:
+          # 固定 NDK 版本以确保构建可复现
+          ndk-version: r26d
       
       # ==================================================================
       #   步骤 2: 同步依赖项并编译
@@ -169,6 +170,7 @@ jobs:
         run: |
           mkdir -p out/${{ matrix.output_dir_name }}
           echo "$GN_ARGS_CONTENT" > out/${{ matrix.output_dir_name }}/args.gn
+          # gn 会自动使用 ANDROID_NDK_ROOT 环境变量
           gn gen out/${{ matrix.output_dir_name }}
 
       - name: 2.3 Compile Skia (ninja)
