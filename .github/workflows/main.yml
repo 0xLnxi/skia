@@ -119,9 +119,10 @@ jobs:
               skia_use_system_harfbuzz = false
               target_os = "android"
               target_cpu = "arm64"
-              # ✅ FIX: 指向我们手动下载的、兼容的 NDK r21e 版本。
-              # 使用 "//" 前缀表示路径相对于源码根目录。
-              ndk = "//android-ndk-r21e"
+              # ✅ FIX: ndk 路径不应使用 "//" 前缀。
+              # gn 会将 "android-ndk-r21e" 解释为相对于源码根目录的路径，并正确生成绝对路径。
+              # 使用 "//" 会导致 gn 生成一个无效的绝对路径 "//android-ndk-r21e"，shell 无法识别。
+              ndk = "android-ndk-r21e"
               ndk_api = 21
               extra_cflags_cc = [ "-std=c++20", "-D_USE_MATH_DEFINES", "-fno-exceptions", "-D_LIBCPP_HAS_NO_THREADS" ]
 
@@ -152,7 +153,6 @@ jobs:
       with:
         python-version: '3.x'
         
-    # ✅ FIX: 新增步骤，仅在 Android 构建时下载并安装指定的 NDK
     - name: 1.5 Install Specific Android NDK (r21e)
       if: matrix.target_os == 'android'
       shell: bash
@@ -217,7 +217,7 @@ jobs:
             $DestFile = Join-Path $SDKLicenseDir "$($_.Directory.Name)-$($_.Name)"
             Copy-Item -Path $_.FullName -Destination $DestFile -Force
         }
-      
+    
     - name: 3.2 Generate SkiaConfig.cmake (Windows)
       if: matrix.target_os == 'win'
       shell: pwsh
