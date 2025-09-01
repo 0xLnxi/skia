@@ -7,36 +7,39 @@
 #   此工作流自动化了从源码构建Skia图形库的过程。
 #   它被设计为在包含'skia' git子模块的仓库中运行。
 #
+# .TRIGGERS
+#   1. Weekly Schedule: 每周一 08:00 UTC 自动运行，构建所有通用平台。
+#   2. Manual Dispatch: 可以手动触发，并选择一个特定的平台进行构建。
+#
 # .USAGE
-#   1. 在你的仓库根目录创建一个名为 'skia' 的 git 子模块，指向 Skia 官方仓库。
-#      git submodule add https://skia.googlesource.com/skia.git skia
-#      git commit -m "Add Skia submodule"
-#   2. 从 "Actions" 탭手动触发此工作流。
-#   3. 选择目标平台和架构。
-#   4. 运行后，从工作流摘要页面下载包含SDK的构建产物。
+#   - 对于自动构建，无需任何操作。
+#   - 对于手动构建:
+#     1. 导航到仓库的 "Actions" 탭。
+#     2. 在左侧选择 "Build Skia SDK" 工作流。
+#     3. 点击 "Run workflow" 按钮。
+#     4. 从下拉菜单中选择一个构建目标，然后开始运行。
+#     5. 运行结束后，从工作流摘要页面下载包含SDK的构建产物。
 
 name: Build Skia SDK
 
 on:
+  # 1. 每周定时触发
+  schedule:
+    # UTC时间每周一上午8点运行 (Cron syntax)
+    - cron: '0 8 * * 1'
+
+  # 2. 手动触发
   workflow_dispatch:
     inputs:
-      target:
-        description: '构建的目标操作系统 (Target Operating System)'
+      build_target:
+        description: '选择要构建的通用平台 (Select common build target)'
         required: true
         type: choice
-        default: 'Windows'
+        default: 'windows-x64'
         options:
-          - Windows
-          - Linux
-          - Android
-      arch:
-        description: '目标架构 (Target Architecture)'
-        required: true
-        type: choice
-        default: 'x64'
-        options:
-          - x64
-          - arm64
+          - windows-x64
+          - linux-x64
+          - android-arm64
 
 jobs:
   # ==================================================================
@@ -44,7 +47,8 @@ jobs:
   # ==================================================================
   build-windows:
     name: Build for Windows x64
-    if: github.event.inputs.target == 'Windows' && github.event.inputs.arch == 'x64'
+    # 条件：当为定时任务时运行，或者手动触发并选择了此目标时运行
+    if: github.event_name == 'schedule' || github.event.inputs.build_target == 'windows-x64'
     runs-on: windows-latest
 
     steps:
@@ -62,12 +66,10 @@ jobs:
 
       - name: Install depot_tools
         if: steps.cache-depot-tools.outputs.cache-hit != 'true'
-        run: |
-          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+        run: git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
 
       - name: Add depot_tools to PATH
-        run: |
-          echo "$GITHUB_WORKSPACE/depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        run: echo "$GITHUB_WORKSPACE/depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Cache Skia Dependencies
         id: cache-skia-deps
@@ -93,19 +95,10 @@ jobs:
         run: |
           $OutputDirName = "Release-Clang-Optimized-Win"
           $BuildDir = "out/$OutputDirName"
-          $ArgsFile = Join-Path $BuildDir "args.gn"
-
           if (-not (Test-Path $BuildDir)) {
             New-Item -ItemType Directory -Path $BuildDir | Out-Null
           }
-
-          # 注意: GitHub Actions Runner中的路径与本地不同
           $LlvmPath = "C:/Program Files/LLVM"
-          $VisualStudioPath = $env:VSWIN_INSTALLER
-          $WinSdkPath = "C:/Program Files (x86)/Windows Kits/10"
-          # Runner通常有多个SDK版本，我们让Skia自动发现
-          # $WinSdkVersion = "10.0.22621.0" 
-
           $GnArgs = @"
           is_official_build = true
           is_debug = false
@@ -134,14 +127,12 @@ jobs:
           extra_cflags_cc = [ "/MD", "-D_USE_MATH_DEFINES", "/std:c++20" ]
           extra_ldflags = [ "/OPT:ICF", "/OPT:REF" ]
           "@
-          Set-Content -Path $ArgsFile -Value $GnArgs
-
+          Set-Content -Path (Join-Path $BuildDir "args.gn") -Value $GnArgs
           gn gen $BuildDir
 
       - name: Compile Skia with Ninja
         working-directory: skia
-        run: |
-          ninja -C "out/Release-Clang-Optimized-Win"
+        run: ninja -C "out/Release-Clang-Optimized-Win"
 
       - name: Package SDK
         id: package-sdk
@@ -149,24 +140,15 @@ jobs:
           $SourceDir = "${{ github.workspace }}/skia"
           $BuildOutputDir = Join-Path $SourceDir "out/Release-Clang-Optimized-Win"
           $DestinationDir = "${{ github.workspace }}/skia-windows-x64"
-
-          # 创建SDK目录结构
           New-Item -ItemType Directory -Path "$DestinationDir/include", "$DestinationDir/lib", "$DestinationDir/bin", "$DestinationDir/LICENSES"
-
-          # 拷贝头文件
           robocopy "$SourceDir/include" "$DestinationDir/include/include" /E /NP /NFL /NDL
           robocopy "$SourceDir/modules" "$DestinationDir/include/modules" /E /NP /NFL /NDL
           robocopy "$SourceDir/third_party/externals/dawn/include" "$DestinationDir/include/third_party/externals/dawn/include" /E /NP /NFL /NDL
           robocopy "$BuildOutputDir/gen/third_party/externals/dawn/include" "$DestinationDir/include/gen/third_party/externals/dawn/include" /E /NP /NFL /NDL
-
-          # 拷贝库和二进制文件
           Get-ChildItem -Path $BuildOutputDir -Filter "*.lib" | Copy-Item -Destination "$DestinationDir/lib"
           Get-ChildItem -Path $BuildOutputDir -Filter "*.dll" | Copy-Item -Destination "$DestinationDir/bin"
           Copy-Item -Path (Join-Path $BuildOutputDir "icudtl.dat") -Destination "$DestinationDir/bin" -ErrorAction SilentlyContinue
-          
-          # 拷贝许可证
           Copy-Item -Path (Join-Path $SourceDir "LICENSE") -Destination (Join-Path $DestinationDir "LICENSES" "Skia-LICENSE")
-
           echo "sdk_path=$DestinationDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Upload Skia SDK Artifact
@@ -180,7 +162,7 @@ jobs:
   # ==================================================================
   build-linux:
     name: Build for Linux x64
-    if: github.event.inputs.target == 'Linux' && github.event.inputs.arch == 'x64'
+    if: github.event_name == 'schedule' || github.event.inputs.build_target == 'linux-x64'
     runs-on: ubuntu-latest
 
     steps:
@@ -198,12 +180,10 @@ jobs:
 
       - name: Install depot_tools
         if: steps.cache-depot-tools.outputs.cache-hit != 'true'
-        run: |
-          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+        run: git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
       
       - name: Add depot_tools to PATH
-        run: |
-          echo "$GITHUB_WORKSPACE/depot_tools" >> $GITHUB_PATH
+        run: echo "$GITHUB_WORKSPACE/depot_tools" >> $GITHUB_PATH
 
       - name: Cache Skia Dependencies
         id: cache-skia-deps
@@ -268,23 +248,15 @@ jobs:
           SOURCE_DIR="${{ github.workspace }}/skia"
           BUILD_OUTPUT_DIR="$SOURCE_DIR/out/Release-Clang-Optimized-Linux"
           DESTINATION_DIR="${{ github.workspace }}/skia-linux-x64"
-
           mkdir -p "$DESTINATION_DIR/include" "$DESTINATION_DIR/lib" "$DESTINATION_DIR/bin" "$DESTINATION_DIR/LICENSES"
-          
           cp -r "$SOURCE_DIR/include" "$DESTINATION_DIR/include/include"
           cp -r "$SOURCE_DIR/modules" "$DESTINATION_DIR/include/modules"
           cp -r "$SOURCE_DIR/third_party/externals/dawn/include" "$DESTINATION_DIR/include/third_party/externals/dawn/include"
           cp -r "$BUILD_OUTPUT_DIR/gen/third_party/externals/dawn/include" "$DESTINATION_DIR/include/gen/third_party/externals/dawn/include"
-
           find "$BUILD_OUTPUT_DIR" -maxdepth 1 -name "*.a" -exec cp {} "$DESTINATION_DIR/lib" \;
           find "$BUILD_OUTPUT_DIR" -maxdepth 1 -name "*.so" -exec cp {} "$DESTINATION_DIR/bin" \;
-          
-          if [ -f "$BUILD_OUTPUT_DIR/icudtl.dat" ]; then
-              cp "$BUILD_OUTPUT_DIR/icudtl.dat" "$DESTINATION_DIR/bin"
-          fi
-          
+          if [ -f "$BUILD_OUTPUT_DIR/icudtl.dat" ]; then cp "$BUILD_OUTPUT_DIR/icudtl.dat" "$DESTINATION_DIR/bin"; fi
           cp "$SOURCE_DIR/LICENSE" "$DESTINATION_DIR/LICENSES/Skia-LICENSE"
-          
           echo "sdk_path=$DESTINATION_DIR" >> $GITHUB_OUTPUT
       
       - name: Upload Skia SDK Artifact
@@ -298,7 +270,7 @@ jobs:
   # ==================================================================
   build-android:
     name: Build for Android arm64
-    if: github.event.inputs.target == 'Android' && github.event.inputs.arch == 'arm64'
+    if: github.event_name == 'schedule' || github.event.inputs.build_target == 'android-arm64'
     runs-on: ubuntu-latest
     
     steps:
@@ -337,7 +309,7 @@ jobs:
       - name: Set up Android NDK
         uses: android-actions/setup-android@v2
         with:
-          ndk-version: 'r25c' # Skia推荐版本，比原脚本的更新
+          ndk-version: 'r25c'
 
       - name: Configure Python
         uses: actions/setup-python@v5
@@ -353,8 +325,6 @@ jobs:
         run: |
           OUTPUT_DIR="out/Release-Clang-Optimized-Android"
           mkdir -p $OUTPUT_DIR
-          # ANDROID_NDK_LATEST_PATH由setup-android action设置
-          NDK_PATH_ESCAPED=$(echo $ANDROID_NDK_LATEST_PATH | sed 's_/_\\/_g')
           cat <<EOF > $OUTPUT_DIR/args.gn
           is_official_build = true
           is_debug = false
@@ -391,23 +361,15 @@ jobs:
           SOURCE_DIR="${{ github.workspace }}/skia"
           BUILD_OUTPUT_DIR="$SOURCE_DIR/out/Release-Clang-Optimized-Android"
           DESTINATION_DIR="${{ github.workspace }}/skia-android-arm64"
-
           mkdir -p "$DESTINATION_DIR/include" "$DESTINATION_DIR/lib" "$DESTINATION_DIR/bin" "$DESTINATION_DIR/LICENSES"
-          
           cp -r "$SOURCE_DIR/include" "$DESTINATION_DIR/include/include"
           cp -r "$SOURCE_DIR/modules" "$DESTINATION_DIR/include/modules"
           cp -r "$SOURCE_DIR/third_party/externals/dawn/include" "$DESTINATION_DIR/include/third_party/externals/dawn/include"
           cp -r "$BUILD_OUTPUT_DIR/gen/third_party/externals/dawn/include" "$DESTINATION_DIR/include/gen/third_party/externals/dawn/include"
-
           find "$BUILD_OUTPUT_DIR" -maxdepth 1 -name "*.a" -exec cp {} "$DESTINATION_DIR/lib" \;
           find "$BUILD_OUTPUT_DIR" -maxdepth 1 -name "*.so" -exec cp {} "$DESTINATION_DIR/bin" \;
-          
-          if [ -f "$BUILD_OUTPUT_DIR/icudtl.dat" ]; then
-              cp "$BUILD_OUTPUT_DIR/icudtl.dat" "$DESTINATION_DIR/bin"
-          fi
-          
+          if [ -f "$BUILD_OUTPUT_DIR/icudtl.dat" ]; then cp "$BUILD_OUTPUT_DIR/icudtl.dat" "$DESTINATION_DIR/bin"; fi
           cp "$SOURCE_DIR/LICENSE" "$DESTINATION_DIR/LICENSES/Skia-LICENSE"
-          
           echo "sdk_path=$DESTINATION_DIR" >> $GITHUB_OUTPUT
       
       - name: Upload Skia SDK Artifact
