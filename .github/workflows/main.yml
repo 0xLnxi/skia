@@ -44,6 +44,7 @@ jobs:
               skia_use_system_zlib = false
               skia_use_system_freetype2 = false
               skia_use_system_harfbuzz = false
+              use_allocator_shim = false
               target_os = "win"
               target_cpu = "x64"
               cc = "clang"
@@ -52,8 +53,8 @@ jobs:
               win_vc = "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC"
               win_sdk = "C:/Program Files (x86)/Windows Kits/10"
               win_sdk_version = "10.0.22621.0"
-              extra_cflags_c = [ "/MT" ]
-              extra_cflags_cc = [ "/MT", "-D_USE_MATH_DEFINES", "/std:c++20" ]
+              extra_cflags_c = [ "/MD" ]
+              extra_cflags_cc = [ "/MD", "-D_USE_MATH_DEFINES", "/std:c++20" ]
               extra_ldflags = [ "/OPT:ICF", "/OPT:REF" ]
 
           - name: linux-x64
@@ -84,6 +85,7 @@ jobs:
               skia_use_system_zlib = false
               skia_use_system_freetype2 = false
               skia_use_system_harfbuzz = false
+              use_allocator_shim = false
               target_os = "linux"
               target_cpu = "x64"
               cc = "clang"
@@ -117,6 +119,7 @@ jobs:
               skia_use_system_zlib = false
               skia_use_system_freetype2 = false
               skia_use_system_harfbuzz = false
+              use_allocator_shim = false
               target_os = "android"
               target_cpu = "arm64"
               ndk_api = 21
@@ -126,16 +129,16 @@ jobs:
     # ==================================================================
     #   步骤 1: 准备环境
     # ==================================================================
-    - name: 1.1 Checkout Skia Source Code (This Repo)
+    - name: 1.1 检出 Skia 源代码 (此仓库)
       uses: actions/checkout@v4
 
-    - name: 1.2 Install System Dependencies (Linux)
+    - name: 1.2 安装系统依赖 (Linux)
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
         sudo apt-get install -y clang wget unzip python3-requests libfontconfig1-dev libfreetype6-dev libharfbuzz-dev libegl1-mesa-dev libgles2-mesa-dev libx11-dev libxrandr-dev libx11-xcb-dev libxcb-dri3-dev libxrender-dev libxshmfence-dev
 
-    - name: 1.3 Setup depot_tools
+    - name: 1.3 设置 depot_tools
       shell: bash
       run: |
         git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
@@ -144,13 +147,12 @@ jobs:
         export PATH="$DEPOT_TOOLS_PATH:$PATH"
         gclient --version
 
-    - name: 1.4 Setup Python
+    - name: 1.4 设置 Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.x'
         
-    # ✅ FIX: 使用标准 Action 并指定 NDK r26 版本
-    - name: 1.5 Setup Android NDK (r26)
+    - name: 1.5 设置 Android NDK (r26)
       if: matrix.target_os == 'android'
       uses: nttld/setup-ndk@v1
       with:
@@ -159,11 +161,10 @@ jobs:
     # ==================================================================
     #   步骤 2: 同步依赖项并编译
     # ==================================================================
-    - name: 2.1 Sync Skia Dependencies (DEPS)
+    - name: 2.1 同步 Skia 依赖项 (DEPS)
       run: python3 tools/git-sync-deps
 
-    # ✅ FIX: 更新配置步骤以使用 Action 设置的环境变量
-    - name: 2.2 Configure Skia Build (gn)
+    - name: 2.2 配置 Skia 构建 (gn)
       env:
         GN_ARGS_CONTENT: ${{ matrix.gn_args }}
       shell: bash
@@ -178,25 +179,24 @@ jobs:
 
         # 如果是 Android 构建，使用 Action 设置的环境变量追加 NDK 路径
         if [[ "${{ matrix.target_os }}" == "android" ]]; then
-          echo "Appending NDK absolute path from environment variable..."
-          # gn 需要路径在引号内, $ANDROID_NDK_LATEST_PATH 由 nttld/setup-ndk 设置
+          echo "正在追加来自环境变量的 NDK 绝对路径..."
           echo "ndk = \"$ANDROID_NDK_LATEST_PATH\"" >> "$ARGS_FILE"
         fi
 
-        echo "--- Final args.gn content ---"
+        echo "--- 最终 args.gn 内容 ---"
         cat "$ARGS_FILE"
         echo "---------------------------"
 
         # 生成 ninja 构建文件
         gn gen "$OUTPUT_DIR"
 
-    - name: 2.3 Compile Skia (ninja)
+    - name: 2.3 编译 Skia (ninja)
       run: ninja -C out/${{ matrix.output_dir_name }} -j4
 
     # ==================================================================
-    #   步骤 3: 打包为 SDK (无变化)
+    #   步骤 3: 打包为 SDK
     # ==================================================================
-    - name: 3.1 Create and Package SDK Files
+    - name: 3.1 创建并打包 SDK 文件
       shell: pwsh
       run: |
         $SourceDir = "${{ github.workspace }}"
@@ -212,11 +212,18 @@ jobs:
         $SDKLicenseDir = Join-Path $DestinationDir "LICENSES"
         New-Item -ItemType Directory -Path $SDKIncludeDir, $SDKLibDir, $SDKBinDir, $SDKLicenseDir | Out-Null
         
+        # 复制头文件
         Copy-Item -Path (Join-Path $SourceDir "include") -Destination $SDKIncludeDir -Recurse -Force
         Copy-Item -Path (Join-Path $SourceDir "modules") -Destination $SDKIncludeDir -Recurse -Force
         Copy-Item -Path (Join-Path $SourceDir "third_party/externals/dawn/include") -Destination (Join-Path $SDKIncludeDir "third_party/externals/dawn") -Recurse -Force
-        Copy-Item -Path (Join-Path $BuildDir "gen/third_party/externals/dawn/include") -Destination (Join-Path $SDKIncludeDir "gen/third_party/externals/dawn") -Recurse -Force
+        
+        # 检查并复制生成的 Dawn 头文件
+        $GenDawnInclude = Join-Path $BuildDir "gen/third_party/externals/dawn/include"
+        if (Test-Path $GenDawnInclude) {
+            Copy-Item -Path $GenDawnInclude -Destination (Join-Path $SDKIncludeDir "gen/third_party/externals/dawn") -Recurse -Force
+        }
 
+        # 复制库文件和二进制文件
         if ($env:RUNNER_OS -eq "Windows") {
             Get-ChildItem -Path $BuildDir -Filter "*.lib" | Copy-Item -Destination $SDKLibDir
             Get-ChildItem -Path $BuildDir -Filter "*.dll" | Copy-Item -Destination $SDKBinDir
@@ -224,100 +231,251 @@ jobs:
             Get-ChildItem -Path $BuildDir -Filter "*.a" | Copy-Item -Destination $SDKLibDir
             Get-ChildItem -Path $BuildDir -Filter "*.so" | Copy-Item -Destination $SDKBinDir
         }
-        Copy-Item -Path (Join-Path $BuildDir "icudtl.dat") -Destination $SDKBinDir -Force
         
+        # 复制 ICU 数据文件
+        if (Test-Path (Join-Path $BuildDir "icudtl.dat")) {
+            Copy-Item -Path (Join-Path $BuildDir "icudtl.dat") -Destination $SDKBinDir -Force
+        }
+        
+        # 复制许可证文件
         Get-ChildItem -Path $SourceDir -Recurse -Include "LICENSE*", "COPYING*" | ForEach-Object {
             $DestFile = Join-Path $SDKLicenseDir "$($_.Directory.Name)-$($_.Name)"
             Copy-Item -Path $_.FullName -Destination $DestFile -Force
         }
+
+        # 输出文件统计信息用于调试
+        Write-Host "=== 库文件统计 ==="
+        if ($env:RUNNER_OS -eq "Windows") {
+            $libFiles = Get-ChildItem -Path $SDKLibDir -Filter "*.lib"
+            Write-Host "生成了 $($libFiles.Count) 个 .lib 文件:"
+            $libFiles | ForEach-Object { Write-Host "  - $($_.Name)" }
+        } else {
+            $libFiles = Get-ChildItem -Path $SDKLibDir -Filter "*.a"
+            Write-Host "生成了 $($libFiles.Count) 个 .a 文件:"
+            $libFiles | ForEach-Object { Write-Host "  - $($_.Name)" }
+        }
     
-    - name: 3.2 Generate SkiaConfig.cmake (Windows)
+    - name: 3.2 生成 SkiaConfig.cmake (Windows)
       if: matrix.target_os == 'win'
       shell: pwsh
       run: |
         $content = @'
-        get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
-        add_library(Skia::Skia INTERFACE IMPORTED)
-        target_include_directories(Skia::Skia INTERFACE
-            "${Skia_SELF_DIR}/include"
-            "${Skia_SELF_DIR}/include/third_party/externals/dawn"
-            "${Skia_SELF_DIR}/gen/third_party/externals/dawn")
-        target_link_libraries(Skia::Skia INTERFACE
-            "${Skia_SELF_DIR}/lib/skia.lib"
-            "${Skia_SELF_DIR}/lib/allocator_core.lib"
-            "${Skia_SELF_DIR}/lib/allocator_base.lib"
-            "${Skia_SELF_DIR}/lib/allocator_shim.lib"
-            "${Skia_SELF_DIR}/lib/raw_ptr.lib"
-            "${Skia_SELF_DIR}/lib/zlib.lib"
-            "${Skia_SELF_DIR}/lib/dawn_native.dll.lib"
-            "${Skia_SELF_DIR}/lib/dawn_proc.dll.lib"
-            "${Skia_SELF_DIR}/lib/dawn_platform.dll.lib"
-            "${Skia_SELF_DIR}/lib/freetype2.lib"
-            "${Skia_SELF_DIR}/lib/harfbuzz.lib"
-            d3d11.lib d3d12.lib dxguid.lib onecore.lib)
-        target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES SK_BUILD_FOR_WIN)
-        message(STATUS "Found Skia SDK for Windows (Strict)")
-        '@
+# Skia SDK CMake 配置文件
+# 由 GitHub Actions 自动生成
+#
+# 定义一个 IMPORTED 目标 `Skia::Skia` 用于轻松集成
+#
+# 在 CMakeLists.txt 中的用法:
+#   find_package(Skia REQUIRED)
+#   target_link_libraries(your_target PRIVATE Skia::Skia)
+#
+
+get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
+
+set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")
+set(Skia_LIBRARY_DIR "${Skia_SELF_DIR}/lib")
+set(Skia_BINARY_DIR "${Skia_SELF_DIR}/bin")
+
+if (NOT TARGET Skia::Skia)
+    add_library(Skia::Skia INTERFACE IMPORTED)
+
+    # --- 包含目录 ---
+    target_include_directories(Skia::Skia INTERFACE
+            "${Skia_INCLUDE_DIR}"
+            "${Skia_INCLUDE_DIR}/third_party/externals/dawn"
+            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn"
+    )
+
+    # --- 链接库 (顺序很重要) ---
+    target_link_libraries(Skia::Skia INTERFACE
+            "${Skia_LIBRARY_DIR}/skia.lib"
+            "${Skia_LIBRARY_DIR}/pathops.lib"
+            "${Skia_LIBRARY_DIR}/skresources.lib"
+            "${Skia_LIBRARY_DIR}/skottie.lib"
+            "${Skia_LIBRARY_DIR}/svg.lib"
+            "${Skia_LIBRARY_DIR}/freetype2.lib"
+            "${Skia_LIBRARY_DIR}/harfbuzz.lib"
+            "${Skia_LIBRARY_DIR}/zlib.lib"
+            "${Skia_LIBRARY_DIR}/dawn_native.dll.lib"
+            "${Skia_LIBRARY_DIR}/dawn_proc.dll.lib"
+            "${Skia_LIBRARY_DIR}/dawn_platform.dll.lib"
+            "${Skia_LIBRARY_DIR}/allocator_core.lib"
+            "${Skia_LIBRARY_DIR}/allocator_base.lib"
+            "${Skia_LIBRARY_DIR}/allocator_shim.lib"
+            "${Skia_LIBRARY_DIR}/raw_ptr.lib"
+            "${Skia_LIBRARY_DIR}/common.lib"
+            d3d11.lib
+            d3d12.lib
+            dxguid.lib
+            onecore.lib
+    )
+
+    # --- 编译定义 ---
+    target_compile_definitions(Skia::Skia INTERFACE
+            _USE_MATH_DEFINES
+            SK_BUILD_FOR_WIN
+    )
+
+    # --- 条件性添加 Vulkan 支持 ---
+    find_package(Vulkan QUIET)
+    if(Vulkan_FOUND)
+        message(STATUS "找到 Vulkan SDK，为 Skia::Skia 目标添加 Vulkan 支持。")
+        target_link_libraries(Skia::Skia INTERFACE Vulkan::Vulkan)
+    else()
+        message(STATUS "未找到 Vulkan SDK。跳过 Skia 的 Vulkan 支持。")
+    endif()
+endif()
+'@
         Set-Content -Path "${{ github.workspace }}/skia-sdk/SkiaConfig.cmake" -Value $content
 
-    - name: 3.3 Generate SkiaConfig.cmake (Linux)
+    - name: 3.3 生成 SkiaConfig.cmake (Linux)
       if: matrix.target_os == 'linux'
       shell: bash
       run: |
         cat << 'EOF' > ${{ github.workspace }}/skia-sdk/SkiaConfig.cmake
-        get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
-        add_library(Skia::Skia INTERFACE IMPORTED)
-        target_include_directories(Skia::Skia INTERFACE
-            "${Skia_SELF_DIR}/include"
-            "${Skia_SELF_DIR}/include/third_party/externals/dawn"
-            "${Skia_SELF_DIR}/gen/third_party/externals/dawn")
-        target_link_libraries(Skia::Skia INTERFACE
-            "${Skia_SELF_DIR}/lib/libskia.a"
-            "${Skia_SELF_DIR}/lib/liballocator_core.a"
-            "${Skia_SELF_DIR}/lib/liballocator_base.a"
-            "${Skia_SELF_DIR}/lib/liballocator_shim.a"
-            "${Skia_SELF_DIR}/lib/libraw_ptr.a"
-            "${Skia_SELF_DIR}/lib/libzlib.a"
-            "${Skia_SELF_DIR}/bin/libdawn_native.so"
-            "${Skia_SELF_DIR}/bin/libdawn_proc.so"
-            "${Skia_SELF_DIR}/lib/libfreetype2.a"
-            "${Skia_SELF_DIR}/lib/libharfbuzz.a"
-            fontconfig dl pthread EGL GLESv2 X11)
-        target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES)
-        message(STATUS "Found Skia SDK for Linux (Strict)")
-        EOF
+# Skia SDK CMake 配置文件
+# 由 GitHub Actions 自动生成
+#
+# 定义一个 IMPORTED 目标 `Skia::Skia` 用于轻松集成
+#
+# 在 CMakeLists.txt 中的用法:
+#   find_package(Skia REQUIRED)
+#   target_link_libraries(your_target PRIVATE Skia::Skia)
+#
 
-    - name: 3.4 Generate SkiaConfig.cmake (Android)
+get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
+
+set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")
+set(Skia_LIBRARY_DIR "${Skia_SELF_DIR}/lib")
+set(Skia_BINARY_DIR "${Skia_SELF_DIR}/bin")
+
+if (NOT TARGET Skia::Skia)
+    add_library(Skia::Skia INTERFACE IMPORTED)
+
+    # --- 包含目录 ---
+    target_include_directories(Skia::Skia INTERFACE
+            "${Skia_INCLUDE_DIR}"
+            "${Skia_INCLUDE_DIR}/third_party/externals/dawn"
+            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn"
+    )
+
+    # --- 链接库 (顺序很重要) ---
+    target_link_libraries(Skia::Skia INTERFACE
+            "${Skia_LIBRARY_DIR}/libskia.a"
+            "${Skia_LIBRARY_DIR}/libpathops.a"
+            "${Skia_LIBRARY_DIR}/libskresources.a"
+            "${Skia_LIBRARY_DIR}/libskottie.a"
+            "${Skia_LIBRARY_DIR}/libsvg.a"
+            "${Skia_LIBRARY_DIR}/libfreetype2.a"
+            "${Skia_LIBRARY_DIR}/libharfbuzz.a"
+            "${Skia_LIBRARY_DIR}/libzlib.a"
+            "${Skia_LIBRARY_DIR}/libdawn_native.a"
+            "${Skia_LIBRARY_DIR}/libdawn_proc.a"
+            "${Skia_LIBRARY_DIR}/libdawn_platform.a"
+            "${Skia_LIBRARY_DIR}/liballocator_core.a"
+            "${Skia_LIBRARY_DIR}/liballocator_base.a"
+            "${Skia_LIBRARY_DIR}/liballocator_shim.a"
+            "${Skia_LIBRARY_DIR}/libraw_ptr.a"
+            "${Skia_LIBRARY_DIR}/libcommon.a"
+            fontconfig
+            dl
+            pthread
+            EGL
+            GLESv2
+            X11
+    )
+
+    # --- 编译定义 ---
+    target_compile_definitions(Skia::Skia INTERFACE
+            _USE_MATH_DEFINES
+    )
+
+    # --- 条件性添加 Vulkan 支持 ---
+    find_package(Vulkan QUIET)
+    if(Vulkan_FOUND)
+        message(STATUS "找到 Vulkan SDK，为 Skia::Skia 目标添加 Vulkan 支持。")
+        target_link_libraries(Skia::Skia INTERFACE Vulkan::Vulkan)
+    else()
+        message(STATUS "未找到 Vulkan SDK。跳过 Skia 的 Vulkan 支持。")
+    endif()
+endif()
+EOF
+
+    - name: 3.4 生成 SkiaConfig.cmake (Android)
       if: matrix.target_os == 'android'
       shell: bash
       run: |
         cat << 'EOF' > ${{ github.workspace }}/skia-sdk/SkiaConfig.cmake
-        get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
-        add_library(Skia::Skia INTERFACE IMPORTED)
-        target_include_directories(Skia::Skia INTERFACE
-            "${Skia_SELF_DIR}/include"
-            "${Skia_SELF_DIR}/include/third_party/externals/dawn"
-            "${Skia_SELF_DIR}/gen/third_party/externals/dawn")
-        target_link_libraries(Skia::Skia INTERFACE
-            "${Skia_SELF_DIR}/lib/libskia.a"
-            "${Skia_SELF_DIR}/lib/liballocator_core.a"
-            "${Skia_SELF_DIR}/lib/liballocator_base.a"
-            "${Skia_SELF_DIR}/lib/liballocator_shim.a"
-            "${Skia_SELF_DIR}/lib/libraw_ptr.a"
-            "${Skia_SELF_DIR}/lib/libzlib.a"
-            "${Skia_SELF_DIR}/bin/libdawn_native.so"
-            "${Skia_SELF_DIR}/bin/libdawn_proc.so"
-            "${Skia_SELF_DIR}/lib/libfreetype2.a"
-            "${Skia_SELF_DIR}/lib/libharfbuzz.a"
-            log android EGL GLESv2)
-        target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES)
-        message(STATUS "Found Skia SDK for Android (Strict)")
-        EOF
+# Skia SDK CMake 配置文件
+# 由 GitHub Actions 自动生成
+#
+# 定义一个 IMPORTED 目标 `Skia::Skia` 用于轻松集成
+#
+# 在 CMakeLists.txt 中的用法:
+#   find_package(Skia REQUIRED)
+#   target_link_libraries(your_target PRIVATE Skia::Skia)
+#
+
+get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
+
+set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")
+set(Skia_LIBRARY_DIR "${Skia_SELF_DIR}/lib")
+set(Skia_BINARY_DIR "${Skia_SELF_DIR}/bin")
+
+if (NOT TARGET Skia::Skia)
+    add_library(Skia::Skia INTERFACE IMPORTED)
+
+    # --- 包含目录 ---
+    target_include_directories(Skia::Skia INTERFACE
+            "${Skia_INCLUDE_DIR}"
+            "${Skia_INCLUDE_DIR}/third_party/externals/dawn"
+            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn"
+    )
+
+    # --- 链接库 (顺序很重要) ---
+    target_link_libraries(Skia::Skia INTERFACE
+            "${Skia_LIBRARY_DIR}/libskia.a"
+            "${Skia_LIBRARY_DIR}/libpathops.a"
+            "${Skia_LIBRARY_DIR}/libskresources.a"
+            "${Skia_LIBRARY_DIR}/libskottie.a"
+            "${Skia_LIBRARY_DIR}/libsvg.a"
+            "${Skia_LIBRARY_DIR}/libfreetype2.a"
+            "${Skia_LIBRARY_DIR}/libharfbuzz.a"
+            "${Skia_LIBRARY_DIR}/libzlib.a"
+            "${Skia_LIBRARY_DIR}/libdawn_native.a"
+            "${Skia_LIBRARY_DIR}/libdawn_proc.a"
+            "${Skia_LIBRARY_DIR}/libdawn_platform.a"
+            "${Skia_LIBRARY_DIR}/liballocator_core.a"
+            "${Skia_LIBRARY_DIR}/liballocator_base.a"
+            "${Skia_LIBRARY_DIR}/liballocator_shim.a"
+            "${Skia_LIBRARY_DIR}/libraw_ptr.a"
+            "${Skia_LIBRARY_DIR}/libcommon.a"
+            log
+            android
+            EGL
+            GLESv2
+    )
+
+    # --- 编译定义 ---
+    target_compile_definitions(Skia::Skia INTERFACE
+            _USE_MATH_DEFINES
+    )
+
+    # --- 条件性添加 Vulkan 支持 ---
+    find_package(Vulkan QUIET)
+    if(Vulkan_FOUND)
+        message(STATUS "找到 Vulkan SDK，为 Skia::Skia 目标添加 Vulkan 支持。")
+        target_link_libraries(Skia::Skia INTERFACE Vulkan::Vulkan)
+    else()
+        message(STATUS "未找到 Vulkan SDK。跳过 Skia 的 Vulkan 支持。")
+    endif()
+endif()
+EOF
 
     # ==================================================================
-    #   步骤 4: 上传构件 (无变化)
+    #   步骤 4: 上传构件
     # ==================================================================
-    - name: 4.1 Upload SDK Artifact
+    - name: 4.1 上传 SDK 构件
       uses: actions/upload-artifact@v4
       with:
         name: skia-sdk-${{ matrix.name }}
