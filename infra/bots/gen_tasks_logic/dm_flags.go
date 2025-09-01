@@ -175,7 +175,17 @@ func (b *taskBuilder) dmFlags(internalHardwareLabel string) {
 	sampleCount := 0
 	glPrefix := ""
 	if b.extraConfig("SwiftShader") {
-		configs = append(configs, "vk", "vkdmsaa")
+		if b.extraConfig("Graphite") {
+			configs = append(configs, "grvk")
+			// b/441484662
+			skip(ALL, "test", ALL, "BigImage")
+			skip(ALL, "test", ALL, "PaintParamsKey")
+			skip(ALL, "test", ALL, "AndroidPrecompile")
+			skip(ALL, "test", ALL, "MultisampleRetain")
+			skip(ALL, "gm", ALL, "lcd")
+		} else {
+			configs = append(configs, "vk", "vkdmsaa")
+		}
 		// skbug.com/40043920
 		skip(ALL, "test", ALL, "GrThreadSafeCache16Verts")
 		// b/296440036
@@ -296,6 +306,7 @@ func (b *taskBuilder) dmFlags(internalHardwareLabel string) {
 			skip(ALL, "test", ALL, "HalfFloatRGBATextureTest")
 			skip(ALL, "test", ALL, "ImageAsyncReadPixels")
 			skip(ALL, "test", ALL, "ImageAsyncReadPixelsGraphite")
+			skip(ALL, "test", ALL, "ImageBackendTextureTest")
 			skip(ALL, "test", ALL, "ImageEncode_Gpu")
 			skip(ALL, "test", ALL, "ImageFilterFailAffectsTransparentBlack_Gpu")
 			skip(ALL, "test", ALL, "ImageFilterNegativeBlurSigma_Gpu")
@@ -343,6 +354,7 @@ func (b *taskBuilder) dmFlags(internalHardwareLabel string) {
 			skip(ALL, "test", ALL, "SpecialImage_Gpu")
 			skip(ALL, "test", ALL, "SRGBReadWritePixels")
 			skip(ALL, "test", ALL, "SurfaceAsyncReadPixels")
+			skip(ALL, "test", ALL, "SurfaceBackendTextureTest")
 			skip(ALL, "test", ALL, "SurfaceClear_Gpu")
 			skip(ALL, "test", ALL, "SurfaceContextReadPixels")
 			skip(ALL, "test", ALL, "SurfaceContextWritePixelsMipped")
