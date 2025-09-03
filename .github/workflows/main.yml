@@ -195,54 +195,8 @@ jobs:
           # 生成 ninja 构建文件
           gn gen "$OUTPUT_DIR"
 
-      - name: 2.4 编译 Skia (ninja) - 通用方式
-        if: matrix.target_os != 'android'
+      - name: 2.4 编译 Skia (ninja)
         run: ninja -C out/${{ matrix.output_dir_name }} -j4
-
-      - name: 2.4 编译 Skia (ninja) - Android 专用修复
-        if: matrix.target_os == 'android'
-        shell: bash
-        run: |
-          # 获取 ninja 的实际路径
-          NINJA_PATH=$(which ninja)
-          echo "找到 ninja 路径: $NINJA_PATH"
-          
-          # 检查是否是 depot_tools 包装的 ninja
-          if [[ "$NINJA_PATH" == *"depot_tools"* ]]; then
-            echo "检测到 depot_tools 的 ninja 包装器，尝试直接使用 ninja 二进制文件"
-            
-            # 尝试查找实际的 ninja 二进制文件
-            REAL_NINJA=""
-            
-            # 1. 检查 bin 目录中的 ninja
-            if [[ -f "bin/ninja" ]]; then
-              REAL_NINJA="bin/ninja"
-              echo "使用 Skia bin 目录中的 ninja: $REAL_NINJA"
-            # 2. 检查系统安装的 ninja
-            elif command -v /usr/bin/ninja >/dev/null 2>&1; then
-              REAL_NINJA="/usr/bin/ninja"
-              echo "使用系统安装的 ninja: $REAL_NINJA"
-            # 3. 尝试通过包管理器安装 ninja
-            else
-              echo "未找到 ninja 二进制文件，尝试安装..."
-              sudo apt-get update
-              sudo apt-get install -y ninja-build
-              REAL_NINJA="/usr/bin/ninja"
-            fi
-            
-            # 验证 ninja 是否可用
-            if [[ -n "$REAL_NINJA" && -x "$REAL_NINJA" ]]; then
-              echo "使用 ninja: $REAL_NINJA"
-              "$REAL_NINJA" -C out/${{ matrix.output_dir_name }} -j4
-            else
-              echo "无法找到可用的 ninja，回退到 Python 包装器方式"
-              # 回退到使用 Python 直接调用
-              python3 depot_tools/ninja.py -C out/${{ matrix.output_dir_name }} -j4
-            fi
-          else
-            echo "使用标准 ninja 路径"
-            ninja -C out/${{ matrix.output_dir_name }} -j4
-          fi
       
       # ==================================================================
       #   步骤 3: 打包为 SDK
