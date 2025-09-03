@@ -1,249 +1,288 @@
-# GitHub Workflow for building the Skia Graphics Library
-#
-# .SYNOPSIS
-#   为Windows、Linux或Android目标构建Skia库。
-#
-# .DESCRIPTION
-#   此工作流自动化了从源码构建Skia图形库的过程。
-#   它被设计为在包含'skia' git子模块的仓库中运行。
-#
-# .TRIGGERS
-#   1. Weekly Schedule: 每周一 08:00 UTC 自动运行，构建所有通用平台。
-#   2. Manual Dispatch: 可以手动触发，并选择一个特定的平台进行构建。
-#
-# .USAGE
-#   - 对于自动构建，无需任何操作。
-#   - 对于手动构建:
-#     1. 导航到仓库的 "Actions" 标签。
-#     2. 在左侧选择 "Build Skia SDK" 工作流。
-#     3. 点击 "Run workflow" 按钮。
-#     4. 从下拉菜单中选择一个构建目标，然后开始运行。
-#     5. 运行结束后，从工作流摘要页面下载包含SDK的构建产物。
+# .github/workflows/build-skia-sdk.yml
 
-name: Build Skia SDK
+name: Build Skia SDK Weekly
 
 on:
-  # 1. 每周定时触发
-  schedule:
-    # UTC时间每周一上午8点运行 (Cron syntax)
-    - cron: '0 8 * * 1'
-
-  # 2. 手动触发
+  # 允许手动触发
   workflow_dispatch:
-    inputs:
-      build_target:
-        description: '选择要构建的通用平台 (Select common build target)'
-        required: true
-        type: choice
-        default: 'windows-x64'
-        options:
-          - windows-x64
-          - linux-x64
-          - android-arm64
+  # 每周日凌晨3:15 (UTC) 自动运行
+  schedule:
+    - cron: '15 3 * * 0'
 
 jobs:
-  # ==================================================================
-  # Job: Windows (x64) Build
-  # ==================================================================
-  build-windows:
-    name: Build for Windows x64
-    # 条件：当为定时任务时运行，或者手动触发并选择了此目标时运行
-    if: github.event_name == 'schedule' || github.event.inputs.build_target == 'windows-x64'
-    runs-on: windows-latest
+  build_skia:
+    name: Build for ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            runner: windows-latest
+            target: Windows
+            arch: x64
+            output_dir_name: Release-Clang-Optimized-Win
+            
+          - name: linux-x64
+            runner: ubuntu-latest
+            target: Linux
+            arch: x64
+            output_dir_name: Release-Clang-Optimized-Linux
+            
+          - name: android-arm64
+            runner: ubuntu-latest
+            target: Android
+            arch: arm64
+            output_dir_name: Release-Clang-Optimized-Android-arm64
+
+          - name: android-x64
+            runner: ubuntu-latest
+            target: Android
+            arch: x64
+            output_dir_name: Release-Clang-Optimized-Android-x64
 
     steps:
-      - name: Checkout Repository with Submodules
+      # ==================================================================
+      #   步骤 1: 准备环境
+      # ==================================================================
+      - name: 1.1 检出 Skia 源代码
         uses: actions/checkout@v4
-        with:
-          submodules: 'recursive'
 
-      - name: Cache depot_tools
-        id: cache-depot-tools
-        uses: actions/cache@v4
-        with:
-          path: depot_tools
-          key: ${{ runner.os }}-depot-tools-v2
-
-      - name: Install depot_tools
-        if: steps.cache-depot-tools.outputs.cache-hit != 'true'
-        run: git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-
-      - name: Add depot_tools to PATH
-        run: echo "$env:GITHUB_WORKSPACE/depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Install LLVM/Clang
-        run: |
-          choco install llvm --version=18.1.3 -y
-          # 验证安装
-          & "C:\Program Files\LLVM\bin\clang.exe" --version
-
-      - name: Configure Python
+      - name: 1.2 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      - name: Cache Skia Dependencies
-        id: cache-skia-deps
-        uses: actions/cache@v4
+      - name: 1.3 设置 MSVC (仅 Windows)
+        if: matrix.runner == 'windows-latest'
+        uses: microsoft/setup-msvc@v1.1
         with:
-          path: |
-            skia/third_party
-            skia/buildtools
-          key: ${{ runner.os }}-skia-deps-${{ hashFiles('skia/DEPS') }}
+          # 此 Action 会设置 VCToolsInstallDir, WindowsSDKDir, WindowsSDKVersion 等环境变量
+          # 我们将在后续步骤中使用这些变量来动态配置 gn
+          msvc-version: 'latest'
 
-      - name: Synchronize Skia Dependencies
-        working-directory: skia
+      - name: 1.4 安装系统依赖 (仅 Linux)
+        if: matrix.runner == 'ubuntu-latest'
         run: |
-          # 确保depot_tools在PATH中
-          $env:PATH = "$env:GITHUB_WORKSPACE/depot_tools;$env:PATH"
-          # 验证gclient可用
+          sudo apt-get update
+          sudo apt-get install -y clang wget unzip python3-requests libfontconfig1-dev libfreetype6-dev libharfbuzz-dev libegl1-mesa-dev libgles2-mesa-dev libx11-dev
+
+      - name: 1.5 设置 Android NDK (仅 Android)
+        if: matrix.target == 'Android'
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          # Skia M118+ 需要 NDK r25+，这里使用 r26b
+          ndk-version: r26b
+          
+      - name: 1.6 设置 depot_tools
+        shell: bash
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+          DEPOT_TOOLS_PATH=$(pwd)/depot_tools
+          echo "$DEPOT_TOOLS_PATH" >> $GITHUB_PATH
+          export PATH="$DEPOT_TOOLS_PATH:$PATH"
+          # 验证 gclient 是否可用
           gclient --version
-          # 同步依赖
-          python3 tools/git-sync-deps
 
-      - name: Generate GN Build Configuration
-        working-directory: skia
+      - name: 1.7 确定 Ninja 作业数
+        id: ninja-jobs
+        shell: bash
         run: |
-          # 确保depot_tools在PATH中
-          $env:PATH = "$env:GITHUB_WORKSPACE/depot_tools;$env:PATH"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            # 在 PowerShell 中获取逻辑处理器数量
+            CORE_COUNT=$(powershell -Command "(Get-CimInstance -ClassName Win32_Processor).NumberOfLogicalProcessors")
+          else
+            # 在 Linux 中获取核心数
+            CORE_COUNT=$(nproc)
+          fi
+          echo "使用 $CORE_COUNT 个核心进行编译"
+          echo "count=$CORE_COUNT" >> $GITHUB_OUTPUT
+
+      # ==================================================================
+      #   步骤 2: 同步依赖项并编译
+      # ==================================================================
+      - name: 2.1 删除旧工具以强制重新同步
+        shell: bash
+        run: |
+          echo "正在删除旧的 Skia 工具可执行文件以强制重新同步..."
+          # 这是从您成功的本地脚本中借鉴的关键步骤，以确保工具总是最新的
+          rm -f skia/bin/gn skia/bin/ninja skia/bin/clang-format
+          rm -f skia/bin/gn.exe skia/bin/ninja.exe skia/bin/clang-format.exe
+
+      - name: 2.2 同步 Skia 依赖项 (DEPS)
+        working-directory: ./skia
+        run: python3 tools/git-sync-deps
+
+      - name: 2.3 配置 Skia 构建 (gn)
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          OUTPUT_DIR_NAME: ${{ matrix.output_dir_name }}
+          NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
+        shell: pwsh
+        run: |
+          # --- 定义基础 gn 参数 (与您的本地脚本匹配) ---
+          $baseArgs = @'
+          is_official_build = true
+          is_debug = false
+          is_trivial_abi = false
+          skia_use_freetype = true
+          skia_use_harfbuzz = true
+          skia_pdf_subset_harfbuzz = true
+          skia_enable_skottie = true
+          skia_enable_svg = true
+          skia_enable_ganesh = true
+          skia_enable_graphite = true
+          skia_use_dawn = true
+          skia_use_system_expat = false
+          skia_use_system_icu = false
+          skia_use_system_libjpeg_turbo = false
+          skia_use_system_libpng = false
+          skia_use_system_libwebp = false
+          skia_use_system_zlib = false
+          skia_use_system_freetype2 = false
+          skia_use_system_harfbuzz = false
+          use_allocator_shim = false
+          extra_cflags_cc = [ "-std=c++20", "-D_USE_MATH_DEFINES" ]
+          '@
+
+          # --- 平台特定参数 ---
+          $platformArgs = ""
+          if ($env:TARGET -eq 'Windows') {
+              # 从 setup-msvc action 设置的环境变量动态获取路径
+              $clangWinPath = "$($env:VCToolsInstallDir)/../Llvm/x64".Replace('\', '/')
+              $winVcPath = "$($env:VCToolsInstallDir)/..".Replace('\', '/')
+              $winSdkPath = "$($env:WindowsSDKDir)".Replace('\', '/')
+              $winSdkVersion = $env:WindowsSDKVersion
           
-          $OutputDirName = "Release-Clang-Optimized-Win"
-          $BuildDir = "out/$OutputDirName"
-          if (-not (Test-Path $BuildDir)) {
-            New-Item -ItemType Directory -Path $BuildDir | Out-Null
+              $platformArgs = @"
+          target_os = "win"
+          target_cpu = "x64"
+          cc = "clang"
+          cxx = "clang++"
+          clang_win = "$clangWinPath"
+          win_vc = "$winVcPath"
+          win_sdk = "$winSdkPath"
+          win_sdk_version = "$winSdkVersion"
+          extra_cflags_c = [ "/MD" ]
+          extra_cflags_cc += [ "/MD" ] # 追加到基础定义中
+          extra_ldflags = [ "/OPT:ICF", "/OPT:REF" ]
+          dawn_enable_d3d11 = true
+          dawn_enable_d3d12 = true
+          dawn_enable_vulkan = true
+          "@
+          } elseif ($env:TARGET -eq 'Linux') {
+              $platformArgs = @"
+          target_os = "linux"
+          target_cpu = "x64"
+          cc = "clang"
+          cxx = "clang++"
+          extra_cflags_cc += [ "-fno-exceptions" ]
+          dawn_enable_vulkan = true
+          dawn_enable_opengles = true
+          "@
+          } elseif ($env:TARGET -eq 'Android') {
+              $ndkPathForGn = $env:NDK_PATH.Replace('\', '/')
+              $platformArgs = @"
+          target_os = "android"
+          target_cpu = "$($env:ARCH)"
+          ndk = "$ndkPathForGn"
+          ndk_api = 21
+          extra_cflags_cc += [ "-fno-exceptions" ]
+          dawn_enable_vulkan = true
+          dawn_enable_opengles = true
+          "@
           }
           
-          # 使用固定的路径配置
-          $LlvmPath = "C:/Program Files/LLVM"
-          $VisualStudioPath = "C:/Program Files/Microsoft Visual Studio/2022/Enterprise"
-          $WinSdkPath = "C:/Program Files (x86)/Windows Kits/10"
-          $WinSdkVersion = "10.0.22621.0"
+          $finalArgs = $baseArgs + "`n" + $platformArgs
           
-          # 检查Visual Studio路径
-          if (-not (Test-Path $VisualStudioPath)) {
-            Write-Host "Enterprise版本不存在，尝试Professional版本..."
-            $VisualStudioPath = "C:/Program Files/Microsoft Visual Studio/2022/Professional"
-          }
-          if (-not (Test-Path $VisualStudioPath)) {
-            Write-Host "Professional版本不存在，尝试Community版本..."
-            $VisualStudioPath = "C:/Program Files/Microsoft Visual Studio/2022/Community"
-          }
+          # --- 写入 args.gn 文件 ---
+          $buildDir = "skia/out/$($env:OUTPUT_DIR_NAME)"
+          New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
+          $argsFile = Join-Path $buildDir "args.gn"
+          Set-Content -Path $argsFile -Value $finalArgs
           
-          # 检查可用的Windows SDK版本
-          $SdkVersions = Get-ChildItem -Path "$WinSdkPath/Include" -Directory | Sort-Object Name -Descending
-          if ($SdkVersions.Count -gt 0) {
-            $WinSdkVersion = $SdkVersions[0].Name
-            Write-Host "使用Windows SDK版本: $WinSdkVersion"
-          }
-          
-          $GnArgs = @"
-is_official_build = true
-is_debug = false
-is_trivial_abi = false
-skia_use_freetype = true
-skia_use_harfbuzz = true
-skia_pdf_subset_harfbuzz = true
-skia_enable_skottie = true
-skia_enable_svg = true
-skia_enable_ganesh = true
-skia_enable_graphite = true
-skia_use_dawn = true
-dawn_enable_d3d11 = true
-dawn_enable_d3d12 = true
-dawn_enable_vulkan = true
-skia_use_system_expat = false
-skia_use_system_icu = false
-skia_use_system_libjpeg_turbo = false
-skia_use_system_libpng = false
-skia_use_system_libwebp = false
-skia_use_system_zlib = false
-skia_use_system_freetype2 = false
-skia_use_system_harfbuzz = false
-use_allocator_shim = false
-target_os = "win"
-target_cpu = "x64"
-cc = "clang"
-cxx = "clang++"
-clang_win = "$($LlvmPath -replace '\\', '/')/"
-win_vc = "$($VisualStudioPath -replace '\\', '/')/VC/"
-win_sdk = "$($WinSdkPath -replace '\\', '/')/"
-win_sdk_version = "$WinSdkVersion"
-extra_cflags_c = [ "/MD" ]
-extra_cflags_cc = [ "/MD", "-D_USE_MATH_DEFINES", "/std:c++20" ]
-extra_ldflags = [ "/OPT:ICF", "/OPT:REF" ]
-"@
-          
-          Set-Content -Path (Join-Path $BuildDir "args.gn") -Value $GnArgs
-          
-          # 显示生成的配置
-          Write-Host "--- 生成的args.gn内容 ---"
-          Get-Content (Join-Path $BuildDir "args.gn") | Write-Host
+          Write-Host "--- 最终 args.gn 内容 ---"
+          Get-Content $argsFile
           Write-Host "---------------------------"
           
-          # 生成构建文件
-          gn gen $BuildDir
+          # --- 生成构建文件 ---
+          & gn gen $buildDir
 
-      - name: Compile Skia with Ninja
-        working-directory: skia
-        run: |
-          # 确保depot_tools在PATH中
-          $env:PATH = "$env:GITHUB_WORKSPACE/depot_tools;$env:PATH"
-          
-          # 获取处理器核心数
-          $processorCount = (Get-CimInstance -ClassName Win32_Processor).NumberOfLogicalProcessors
-          Write-Host "使用 $processorCount 个并行作业进行编译"
-          
-          ninja -C "out/Release-Clang-Optimized-Win" -j$processorCount
+      - name: 2.4 编译 Skia (ninja)
+        run: ninja -C skia/out/${{ matrix.output_dir_name }} -j${{ steps.ninja-jobs.outputs.count }}
 
-      - name: Package SDK
-        id: package-sdk
+      # ==================================================================
+      #   步骤 3: 打包为 SDK 并上传
+      # ==================================================================
+      - name: 3.1 打包 SDK (头文件, 库, CMake配置)
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+          OUTPUT_DIR_NAME: ${{ matrix.output_dir_name }}
+        shell: pwsh
         run: |
-          $SourceDir = "${{ github.workspace }}/skia"
-          $BuildOutputDir = Join-Path $SourceDir "out/Release-Clang-Optimized-Win"
-          $DestinationDir = "${{ github.workspace }}/skia-windows-x64"
-          
-          # 创建目录结构
-          $sdkIncludeDir = Join-Path $DestinationDir "include"
-          $sdkLibDir = Join-Path $DestinationDir "lib"
-          $sdkBinDir = Join-Path $DestinationDir "bin"
-          $sdkLicenseDir = Join-Path $DestinationDir "LICENSES"
-          New-Item -ItemType Directory -Path $sdkIncludeDir, $sdkLibDir, $sdkBinDir, $sdkLicenseDir -Force | Out-Null
-          
-          # 拷贝头文件
-          Write-Host "正在拷贝头文件..."
-          robocopy "$SourceDir/include" "$sdkIncludeDir/include" /E /R:3 /W:1 /NP /NDL /NFL
-          robocopy "$SourceDir/modules" "$sdkIncludeDir/modules" /E /R:3 /W:1 /NP /NDL /NFL
-          
-          # 拷贝Dawn头文件
-          $dawnIncludeSource = Join-Path $SourceDir "third_party/externals/dawn/include"
-          if (Test-Path $dawnIncludeSource) {
-            robocopy $dawnIncludeSource "$sdkIncludeDir/third_party/externals/dawn/include" /E /R:3 /W:1 /NP /NDL /NFL
+          $SourceDir = (Get-Location).Path
+          $SkiaRoot = Join-Path $SourceDir "skia"
+          $BuildOutputDir = Join-Path $SkiaRoot "out/$($env:OUTPUT_DIR_NAME)"
+          $DestinationDir = Join-Path $SourceDir "skia-sdk"
+
+          if (Test-Path $DestinationDir) {
+              Remove-Item -Recurse -Force $DestinationDir
           }
-          
-          # 拷贝生成的Dawn头文件
+          $SDKIncludeDir = Join-Path $DestinationDir "include"
+          $SDKLibDir = Join-Path $DestinationDir "lib"
+          $SDKBinDir = Join-Path $DestinationDir "bin"
+          $SDKLicenseDir = Join-Path $DestinationDir "LICENSES"
+          New-Item -ItemType Directory -Path $SDKIncludeDir, $SDKLibDir, $SDKBinDir, $SDKLicenseDir | Out-Null
+
+          # --- 1. 拷贝头文件 ---
+          Write-Host "正在拷贝头文件..."
+          # 确保目标路径存在的情况下进行拷贝，以维持正确的目录结构
+          Copy-Item -Path (Join-Path $SkiaRoot "include") -Destination $SDKIncludeDir -Recurse -Force
+          Copy-Item -Path (Join-Path $SkiaRoot "modules") -Destination $SDKIncludeDir -Recurse -Force
+          $dawnIncludeSource = Join-Path $SkiaRoot "third_party/externals/dawn/include"
+          if (Test-Path $dawnIncludeSource) {
+            Copy-Item -Path $dawnIncludeSource -Destination (Join-Path $SDKIncludeDir "third_party/externals/dawn") -Recurse -Force
+          }
           $genDawnInclude = Join-Path $BuildOutputDir "gen/third_party/externals/dawn/include"
           if (Test-Path $genDawnInclude) {
-            robocopy $genDawnInclude "$sdkIncludeDir/gen/third_party/externals/dawn/include" /E /R:3 /W:1 /NP /NDL /NFL
+              # 创建目标父目录
+              $destParent = "gen/third_party/externals/dawn"
+              New-Item -ItemType Directory -Path (Join-Path $SDKIncludeDir $destParent) -Force | Out-Null
+              Copy-Item -Path $genDawnInclude -Destination (Join-Path $SDKIncludeDir $destParent) -Recurse -Force
           }
-          
-          # 拷贝库文件和二进制文件
+
+          # --- 2. 拷贝库文件和二进制文件 ---
           Write-Host "正在拷贝库文件和二进制文件..."
-          Get-ChildItem -Path $BuildOutputDir -Filter "*.lib" | Copy-Item -Destination $sdkLibDir
-          Get-ChildItem -Path $BuildOutputDir -Filter "*.dll" | Copy-Item -Destination $sdkBinDir
-          
-          # 拷贝ICU数据文件
+          if ($env:TARGET -eq "Windows") {
+              Get-ChildItem -Path $BuildOutputDir -Filter "*.lib" | Copy-Item -Destination $SDKLibDir
+              Get-ChildItem -Path $BuildOutputDir -Filter "*.dll" | Copy-Item -Destination $SDKBinDir
+          } else { # Linux 和 Android
+              Get-ChildItem -Path $BuildOutputDir -Filter "*.a" | Copy-Item -Destination $SDKLibDir
+              Get-ChildItem -Path $BuildOutputDir -Filter "*.so" | Copy-Item -Destination $SDKBinDir
+          }
           $icuDataFile = Join-Path $BuildOutputDir "icudtl.dat"
           if (Test-Path $icuDataFile) {
-            Copy-Item -Path $icuDataFile -Destination $sdkBinDir -Force
+              Copy-Item -Path $icuDataFile -Destination $SDKBinDir -Force
           }
-          
-          # 拷贝许可证文件
+
+          # --- 3. 拷贝许可证文件 ---
           Write-Host "正在拷贝许可证文件..."
-          Copy-Item -Path (Join-Path $SourceDir "LICENSE") -Destination (Join-Path $sdkLicenseDir "Skia-LICENSE") -Force
-          
-          # 生成CMake配置文件
-          $cmakeConfigFile = Join-Path $DestinationDir "SkiaConfig.cmake"
-          $cmakeContent = @'
+          Get-ChildItem -Path $SkiaRoot -Recurse -Include "LICENSE*", "COPYING*" | ForEach-Object {
+              $DestFile = Join-Path $SDKLicenseDir "$($_.Directory.Name)-$($_.Name)"
+              Copy-Item -Path $_.FullName -Destination $DestFile -Force
+          }
+
+          # --- 4. 生成 SkiaConfig.cmake (使用您脚本中的正确内容) ---
+          Write-Host "正在生成 SkiaConfig.cmake..."
+          $CmakeConfigFile = Join-Path $DestinationDir "SkiaConfig.cmake"
+          $CmakeContent = ""
+          switch ($env:TARGET) {
+              'Windows' {
+                  $CmakeContent = @'
 # Skia SDK CMake配置文件 (为Windows生成)
 get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
 set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")
@@ -268,177 +307,19 @@ if (NOT TARGET Skia::Skia)
         "${Skia_LIBRARY_DIR}/dawn_native.dll.lib"
         "${Skia_LIBRARY_DIR}/dawn_proc.dll.lib"
         "${Skia_LIBRARY_DIR}/dawn_platform.dll.lib"
+        "${Skia_LIBRARY_DIR}/allocator_core.lib"
+        "${Skia_LIBRARY_DIR}/allocator_base.lib"
+        "${Skia_LIBRARY_DIR}/allocator_shim.lib"
+        "${Skia_LIBRARY_DIR}/raw_ptr.lib"
+        "${Skia_LIBRARY_DIR}/common.lib"
         d3d11.lib d3d12.lib dxguid.lib onecore.lib
     )
     target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES SK_BUILD_FOR_WIN)
 endif()
 '@
-          Set-Content -Path $cmakeConfigFile -Value $cmakeContent
-          
-          Write-Host "SDK打包完成: $DestinationDir"
-          "sdk_path=$DestinationDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Upload Skia SDK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: skia-windows-x64
-          path: ${{ steps.package-sdk.outputs.sdk_path }}
-
-  # ==================================================================
-  # Job: Linux (x64) Build
-  # ==================================================================
-  build-linux:
-    name: Build for Linux x64
-    if: github.event_name == 'schedule' || github.event.inputs.build_target == 'linux-x64'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout Repository with Submodules
-        uses: actions/checkout@v4
-        with:
-          submodules: 'recursive'
-
-      - name: Cache depot_tools
-        id: cache-depot-tools
-        uses: actions/cache@v4
-        with:
-          path: depot_tools
-          key: ${{ runner.os }}-depot-tools-v2
-
-      - name: Install depot_tools
-        if: steps.cache-depot-tools.outputs.cache-hit != 'true'
-        run: git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-      
-      - name: Add depot_tools to PATH
-        run: echo "$GITHUB_WORKSPACE/depot_tools" >> $GITHUB_PATH
-
-      - name: Install Linux Build Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang wget unzip python3-requests \
-            libfontconfig1-dev libfreetype-dev libharfbuzz-dev \
-            libegl1-mesa-dev libgles2-mesa-dev libx11-dev libxrandr-dev \
-            libx11-xcb-dev libxcb-dri3-dev libxrender-dev libxshmfence-dev
-
-      - name: Configure Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Cache Skia Dependencies
-        id: cache-skia-deps
-        uses: actions/cache@v4
-        with:
-          path: |
-            skia/third_party
-            skia/buildtools
-          key: ${{ runner.os }}-skia-deps-${{ hashFiles('skia/DEPS') }}
-
-      - name: Synchronize Skia Dependencies
-        working-directory: skia
-        run: |
-          # 验证depot_tools工具可用
-          which gclient || { echo "错误：gclient不可用"; exit 1; }
-          which gn || { echo "错误：gn不可用"; exit 1; }
-          which ninja || { echo "错误：ninja不可用"; exit 1; }
-          
-          # 同步依赖
-          python3 tools/git-sync-deps
-
-      - name: Generate GN Build Configuration
-        working-directory: skia
-        run: |
-          OUTPUT_DIR="out/Release-Clang-Optimized-Linux"
-          mkdir -p $OUTPUT_DIR
-          
-          cat > $OUTPUT_DIR/args.gn << 'EOF'
-is_official_build = true
-is_debug = false
-is_trivial_abi = false
-skia_use_freetype = true
-skia_use_harfbuzz = true
-skia_pdf_subset_harfbuzz = true
-skia_enable_skottie = true
-skia_enable_svg = true
-skia_enable_ganesh = true
-skia_enable_graphite = true
-skia_use_dawn = true
-dawn_enable_vulkan = true
-dawn_enable_opengles = true
-dawn_use_x11 = true
-skia_use_system_expat = false
-skia_use_system_icu = false
-skia_use_system_libjpeg_turbo = false
-skia_use_system_libpng = false
-skia_use_system_libwebp = false
-skia_use_system_zlib = false
-skia_use_system_freetype2 = false
-skia_use_system_harfbuzz = false
-use_allocator_shim = false
-target_os = "linux"
-target_cpu = "x64"
-cc = "clang"
-cxx = "clang++"
-extra_cflags_cc = [ "-std=c++20", "-D_USE_MATH_DEFINES", "-fno-exceptions" ]
-EOF
-          
-          echo "--- 生成的args.gn内容 ---"
-          cat $OUTPUT_DIR/args.gn
-          echo "---------------------------"
-          
-          gn gen $OUTPUT_DIR
-
-      - name: Compile Skia with Ninja
-        working-directory: skia
-        run: |
-          # 获取处理器核心数
-          NPROC=$(nproc)
-          echo "使用 $NPROC 个并行作业进行编译"
-          ninja -C "out/Release-Clang-Optimized-Linux" -j$NPROC
-
-      - name: Package SDK
-        id: package-sdk
-        run: |
-          SOURCE_DIR="${{ github.workspace }}/skia"
-          BUILD_OUTPUT_DIR="$SOURCE_DIR/out/Release-Clang-Optimized-Linux"
-          DESTINATION_DIR="${{ github.workspace }}/skia-linux-x64"
-          
-          # 创建目录结构
-          mkdir -p "$DESTINATION_DIR/include" "$DESTINATION_DIR/lib" "$DESTINATION_DIR/bin" "$DESTINATION_DIR/LICENSES"
-          
-          # 拷贝头文件
-          echo "正在拷贝头文件..."
-          cp -r "$SOURCE_DIR/include" "$DESTINATION_DIR/include/include"
-          cp -r "$SOURCE_DIR/modules" "$DESTINATION_DIR/include/modules"
-          
-          # 拷贝Dawn头文件
-          if [ -d "$SOURCE_DIR/third_party/externals/dawn/include" ]; then
-            mkdir -p "$DESTINATION_DIR/include/third_party/externals/dawn"
-            cp -r "$SOURCE_DIR/third_party/externals/dawn/include" "$DESTINATION_DIR/include/third_party/externals/dawn/"
-          fi
-          
-          # 拷贝生成的Dawn头文件
-          if [ -d "$BUILD_OUTPUT_DIR/gen/third_party/externals/dawn/include" ]; then
-            mkdir -p "$DESTINATION_DIR/include/gen/third_party/externals/dawn"
-            cp -r "$BUILD_OUTPUT_DIR/gen/third_party/externals/dawn/include" "$DESTINATION_DIR/include/gen/third_party/externals/dawn/"
-          fi
-          
-          # 拷贝库文件和二进制文件
-          echo "正在拷贝库文件和二进制文件..."
-          find "$BUILD_OUTPUT_DIR" -maxdepth 1 -name "*.a" -exec cp {} "$DESTINATION_DIR/lib" \;
-          find "$BUILD_OUTPUT_DIR" -maxdepth 1 -name "*.so" -exec cp {} "$DESTINATION_DIR/bin" \;
-          
-          # 拷贝ICU数据文件
-          if [ -f "$BUILD_OUTPUT_DIR/icudtl.dat" ]; then 
-            cp "$BUILD_OUTPUT_DIR/icudtl.dat" "$DESTINATION_DIR/bin"
-          fi
-          
-          # 拷贝许可证文件
-          echo "正在拷贝许可证文件..."
-          cp "$SOURCE_DIR/LICENSE" "$DESTINATION_DIR/LICENSES/Skia-LICENSE"
-          
-          # 生成CMake配置文件
-          cat > "$DESTINATION_DIR/SkiaConfig.cmake" << 'EOF'
+              }
+              'Linux' {
+                  $CmakeContent = @'
 # Skia SDK CMake配置文件 (为Linux生成)
 get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
 set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")
@@ -446,201 +327,42 @@ set(Skia_LIBRARY_DIR "${Skia_SELF_DIR}/lib")
 if (NOT TARGET Skia::Skia)
     add_library(Skia::Skia INTERFACE IMPORTED)
     target_include_directories(Skia::Skia INTERFACE
-        "${Skia_INCLUDE_DIR}"
-        "${Skia_INCLUDE_DIR}/modules"
-        "${Skia_INCLUDE_DIR}/third_party/externals/dawn/include"
-        "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include"
+            "${Skia_INCLUDE_DIR}"
+            "${Skia_INCLUDE_DIR}/modules"
+            "${Skia_INCLUDE_DIR}/third_party/externals/dawn/include"
+            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include"
     )
     target_link_libraries(Skia::Skia INTERFACE
-        "${Skia_LIBRARY_DIR}/libskia.a"
-        "${Skia_LIBRARY_DIR}/libpathkit.a"
-        "${Skia_LIBRARY_DIR}/libskresources.a"
-        "${Skia_LIBRARY_DIR}/libskottie.a"
-        "${Skia_LIBRARY_DIR}/libsvg.a"
-        "${Skia_LIBRARY_DIR}/libfreetype2.a"
-        "${Skia_LIBRARY_DIR}/libharfbuzz.a"
-        "${Skia_LIBRARY_DIR}/libzlib.a"
-        "${Skia_LIBRARY_DIR}/libdawn_native.a"
-        "${Skia_LIBRARY_DIR}/libdawn_proc.a"
-        "${Skia_LIBRARY_DIR}/libdawn_platform.a"
-        fontconfig dl pthread EGL GLESv2 X11
+            "-Wl,--start-group"
+            "${Skia_LIBRARY_DIR}/libskia.a"
+            "${Skia_LIBRARY_DIR}/libpathkit.a"
+            "${Skia_LIBRARY_DIR}/libskresources.a"
+            "${Skia_LIBRARY_DIR}/libskottie.a"
+            "${Skia_LIBRARY_DIR}/libsvg.a"
+            "${Skia_LIBRARY_DIR}/libfreetype2.a"
+            "${Skia_LIBRARY_DIR}/libharfbuzz.a"
+            "${Skia_LIBRARY_DIR}/libzlib.a"
+            "${Skia_LIBRARY_DIR}/libdawn_native_static.a"
+            "${Skia_LIBRARY_DIR}/libdawn_proc_static.a"
+            "${Skia_LIBRARY_DIR}/libdawn_platform_static.a"
+            "${Skia_LIBRARY_DIR}/liballocator_core.a"
+            "${Skia_LIBRARY_DIR}/liballocator_base.a"
+            "${Skia_LIBRARY_DIR}/liballocator_shim.a"
+            "${Skia_LIBRARY_DIR}/libraw_ptr.a"
+            "${Skia_LIBRARY_DIR}/libcommon.a"
+            "-Wl,--end-group"
+            fontconfig
+            dl
+            pthread
+            EGL
+            GLESv2
     )
     target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES)
 endif()
-EOF
-          
-          echo "SDK打包完成: $DESTINATION_DIR"
-          echo "sdk_path=$DESTINATION_DIR" >> $GITHUB_OUTPUT
-      
-      - name: Upload Skia SDK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: skia-linux-x64
-          path: ${{ steps.package-sdk.outputs.sdk_path }}
-
-  # ==================================================================
-  # Job: Android (arm64) Build
-  # ==================================================================
-  build-android:
-    name: Build for Android arm64
-    if: github.event_name == 'schedule' || github.event.inputs.build_target == 'android-arm64'
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout Repository with Submodules
-        uses: actions/checkout@v4
-        with:
-          submodules: 'recursive'
-      
-      - name: Cache depot_tools
-        id: cache-depot-tools
-        uses: actions/cache@v4
-        with:
-          path: depot_tools
-          key: ${{ runner.os }}-depot-tools-v2
-
-      - name: Install depot_tools
-        if: steps.cache-depot-tools.outputs.cache-hit != 'true'
-        run: git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
-      
-      - name: Add depot_tools to PATH
-        run: echo "$GITHUB_WORKSPACE/depot_tools" >> $GITHUB_PATH
-
-      - name: Set up JDK
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '11'
-          
-      - name: Set up Android NDK
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: r27
-          add-to-path: false
-
-      - name: Configure Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Cache Skia Dependencies
-        id: cache-skia-deps
-        uses: actions/cache@v4
-        with:
-          path: |
-            skia/third_party
-            skia/buildtools
-          key: ${{ runner.os }}-android-skia-deps-${{ hashFiles('skia/DEPS') }}
-
-      - name: Synchronize Skia Dependencies
-        working-directory: skia
-        run: |
-          # 验证depot_tools工具可用
-          which gclient || { echo "错误：gclient不可用"; exit 1; }
-          which gn || { echo "错误：gn不可用"; exit 1; }
-          which ninja || { echo "错误：ninja不可用"; exit 1; }
-          
-          # 同步依赖
-          python3 tools/git-sync-deps
-
-      - name: Generate GN Build Configuration
-        working-directory: skia
-        run: |
-          OUTPUT_DIR="out/Release-Clang-Optimized-Android"
-          mkdir -p $OUTPUT_DIR
-          
-          # 使用setup-ndk设置的NDK路径
-          NDK_PATH="${{ steps.setup-ndk.outputs.ndk-path }}"
-          echo "使用NDK路径: $NDK_PATH"
-          
-          cat > $OUTPUT_DIR/args.gn << EOF
-is_official_build = true
-is_debug = false
-is_trivial_abi = false
-skia_use_freetype = true
-skia_use_harfbuzz = true
-skia_pdf_subset_harfbuzz = true
-skia_enable_skottie = true
-skia_enable_svg = true
-skia_enable_ganesh = true
-skia_enable_graphite = true
-skia_use_dawn = true
-dawn_enable_vulkan = true
-dawn_enable_opengles = true
-skia_use_system_expat = false
-skia_use_system_icu = false
-skia_use_system_libjpeg_turbo = false
-skia_use_system_libpng = false
-skia_use_system_libwebp = false
-skia_use_system_zlib = false
-skia_use_system_freetype2 = false
-skia_use_system_harfbuzz = false
-use_allocator_shim = false
-target_os = "android"
-target_cpu = "arm64"
-ndk = "$NDK_PATH"
-ndk_api = 21
-extra_cflags_cc = [ "-std=c++20", "-D_USE_MATH_DEFINES", "-fno-exceptions" ]
-EOF
-          
-          echo "--- 生成的args.gn内容 ---"
-          cat $OUTPUT_DIR/args.gn
-          echo "---------------------------"
-          
-          gn gen $OUTPUT_DIR
-
-      - name: Compile Skia with Ninja
-        working-directory: skia
-        run: |
-          # 获取处理器核心数
-          NPROC=$(nproc)
-          echo "使用 $NPROC 个并行作业进行编译"
-          ninja -C "out/Release-Clang-Optimized-Android" -j$NPROC
-        
-      - name: Package SDK
-        id: package-sdk
-        run: |
-          SOURCE_DIR="${{ github.workspace }}/skia"
-          BUILD_OUTPUT_DIR="$SOURCE_DIR/out/Release-Clang-Optimized-Android"
-          DESTINATION_DIR="${{ github.workspace }}/skia-android-arm64"
-          
-          # 创建目录结构
-          mkdir -p "$DESTINATION_DIR/include" "$DESTINATION_DIR/lib" "$DESTINATION_DIR/bin" "$DESTINATION_DIR/LICENSES"
-          
-          # 拷贝头文件
-          echo "正在拷贝头文件..."
-          cp -r "$SOURCE_DIR/include" "$DESTINATION_DIR/include/include"
-          cp -r "$SOURCE_DIR/modules" "$DESTINATION_DIR/include/modules"
-          
-          # 拷贝Dawn头文件
-          if [ -d "$SOURCE_DIR/third_party/externals/dawn/include" ]; then
-            mkdir -p "$DESTINATION_DIR/include/third_party/externals/dawn"
-            cp -r "$SOURCE_DIR/third_party/externals/dawn/include" "$DESTINATION_DIR/include/third_party/externals/dawn/"
-          fi
-          
-          # 拷贝生成的Dawn头文件
-          if [ -d "$BUILD_OUTPUT_DIR/gen/third_party/externals/dawn/include" ]; then
-            mkdir -p "$DESTINATION_DIR/include/gen/third_party/externals/dawn"
-            cp -r "$BUILD_OUTPUT_DIR/gen/third_party/externals/dawn/include" "$DESTINATION_DIR/include/gen/third_party/externals/dawn/"
-          fi
-          
-          # 拷贝库文件和二进制文件
-          echo "正在拷贝库文件和二进制文件..."
-          find "$BUILD_OUTPUT_DIR" -maxdepth 1 -name "*.a" -exec cp {} "$DESTINATION_DIR/lib" \;
-          find "$BUILD_OUTPUT_DIR" -maxdepth 1 -name "*.so" -exec cp {} "$DESTINATION_DIR/bin" \;
-          
-          # 拷贝ICU数据文件
-          if [ -f "$BUILD_OUTPUT_DIR/icudtl.dat" ]; then 
-            cp "$BUILD_OUTPUT_DIR/icudtl.dat" "$DESTINATION_DIR/bin"
-          fi
-          
-          # 拷贝许可证文件
-          echo "正在拷贝许可证文件..."
-          cp "$SOURCE_DIR/LICENSE" "$DESTINATION_DIR/LICENSES/Skia-LICENSE"
-          
-          # 生成CMake配置文件
-          cat > "$DESTINATION_DIR/SkiaConfig.cmake" << 'EOF'
+'@
+              }
+              'Android' {
+                  $CmakeContent = @'
 # Skia SDK CMake配置文件 (为Android生成)
 get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
 set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")
@@ -654,6 +376,7 @@ if (NOT TARGET Skia::Skia)
         "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include"
     )
     target_link_libraries(Skia::Skia INTERFACE
+        "-Wl,--start-group"
         "${Skia_LIBRARY_DIR}/libskia.a"
         "${Skia_LIBRARY_DIR}/libpathkit.a"
         "${Skia_LIBRARY_DIR}/libskresources.a"
@@ -662,20 +385,32 @@ if (NOT TARGET Skia::Skia)
         "${Skia_LIBRARY_DIR}/libfreetype2.a"
         "${Skia_LIBRARY_DIR}/libharfbuzz.a"
         "${Skia_LIBRARY_DIR}/libzlib.a"
-        "${Skia_LIBRARY_DIR}/libdawn_native.a"
-        "${Skia_LIBRARY_DIR}/libdawn_proc.a"
-        "${Skia_LIBRARY_DIR}/libdawn_platform.a"
-        log android EGL GLESv2
+        "${Skia_LIBRARY_DIR}/libdawn_native_static.a"
+        "${Skia_LIBRARY_DIR}/libdawn_proc_static.a"
+        "${Skia_LIBRARY_DIR}/libdawn_platform_static.a"
+        "${Skia_LIBRARY_DIR}/liballocator_core.a"
+        "${Skia_LIBRARY_DIR}/liballocator_base.a"
+        "${Skia_LIBRARY_DIR}/liballocator_shim.a"
+        "${Skia_LIBRARY_DIR}/libraw_ptr.a"
+        "${Skia_LIBRARY_DIR}/libcommon.a"
+        "-Wl,--end-group"
+        log 
+        android 
+        EGL 
+        GLESv2
     )
     target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES)
 endif()
-EOF
+'@
+              }
+          }
+          Set-Content -Path $CmakeConfigFile -Value $CmakeContent
           
-          echo "SDK打包完成: $DESTINATION_DIR"
-          echo "sdk_path=$DESTINATION_DIR" >> $GITHUB_OUTPUT
-      
-      - name: Upload Skia SDK Artifact
+          Write-Host "✅ SDK for $($env:TARGET)-$($env:ARCH) 已成功打包到 $DestinationDir"
+
+
+      - name: 3.2 上传 SDK 构件
         uses: actions/upload-artifact@v4
         with:
-          name: skia-android-arm64
-          path: ${{ steps.package-sdk.outputs.sdk_path }}
+          name: skia-sdk-${{ matrix.name }}
+          path: skia-sdk/
