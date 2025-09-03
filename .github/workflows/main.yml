@@ -195,8 +195,66 @@ jobs:
           # 生成 ninja 构建文件
           gn gen "$OUTPUT_DIR"
 
-      - name: 2.4 编译 Skia (ninja)
-        run: ninja -C out/${{ matrix.output_dir_name }} -j4
+      - name: 2.4 编译 Skia (ninja) - 修复版本兼容性问题
+        shell: bash
+        run: |
+          OUTPUT_DIR="out/${{ matrix.output_dir_name }}"
+          
+          # 检查是否存在本地 ninja 二进制文件
+          if [[ -f "bin/ninja" ]]; then
+            echo "使用本地 ninja 二进制文件进行编译..."
+            ./bin/ninja -C "$OUTPUT_DIR" -j4
+          elif [[ -f "bin/ninja.exe" ]]; then
+            echo "使用本地 ninja.exe 二进制文件进行编译..."
+            ./bin/ninja.exe -C "$OUTPUT_DIR" -j4
+          else
+            echo "本地 ninja 不存在，尝试使用 depot_tools 中的 ninja..."
+            
+            # 检查 depot_tools 中的 ninja 是否可用
+            DEPOT_TOOLS_NINJA=$(which ninja)
+            if [[ -n "$DEPOT_TOOLS_NINJA" ]]; then
+              echo "找到 depot_tools ninja: $DEPOT_TOOLS_NINJA"
+              
+              # 检查是否是 Python 包装器，如果是则直接调用原始 ninja
+              if [[ "$DEPOT_TOOLS_NINJA" == *"depot_tools"* ]]; then
+                # 尝试找到原始的 ninja 二进制文件
+                ORIGINAL_NINJA=""
+                
+                # 在常见位置查找原始 ninja
+                for ninja_path in /usr/bin/ninja /usr/local/bin/ninja $(dirname "$DEPOT_TOOLS_NINJA")/ninja-linux64 $(dirname "$DEPOT_TOOLS_NINJA")/ninja-mac; do
+                  if [[ -f "$ninja_path" && -x "$ninja_path" ]]; then
+                    ORIGINAL_NINJA="$ninja_path"
+                    break
+                  fi
+                done
+                
+                if [[ -n "$ORIGINAL_NINJA" ]]; then
+                  echo "使用原始 ninja 二进制文件: $ORIGINAL_NINJA"
+                  "$ORIGINAL_NINJA" -C "$OUTPUT_DIR" -j4
+                else
+                  echo "警告: 无法找到原始 ninja 二进制文件，尝试安装系统 ninja..."
+                  
+                  # 根据操作系统安装 ninja
+                  if [[ "${{ runner.os }}" == "Linux" ]]; then
+                    sudo apt-get update && sudo apt-get install -y ninja-build
+                    ninja -C "$OUTPUT_DIR" -j4
+                  elif [[ "${{ runner.os }}" == "macOS" ]]; then
+                    brew install ninja
+                    ninja -C "$OUTPUT_DIR" -j4
+                  else
+                    echo "错误: 无法为 ${{ runner.os }} 安装 ninja"
+                    exit 1
+                  fi
+                fi
+              else
+                # 直接使用找到的 ninja
+                ninja -C "$OUTPUT_DIR" -j4
+              fi
+            else
+              echo "错误: 在 PATH 中找不到 ninja"
+              exit 1
+            fi
+          fi
       
       # ==================================================================
       #   步骤 3: 打包为 SDK
