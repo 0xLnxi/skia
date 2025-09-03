@@ -58,8 +58,6 @@ jobs:
         if: matrix.runner == 'windows-latest'
         uses: microsoft/setup-msvc@v1.1
         with:
-          # 此 Action 会设置 VCToolsInstallDir, WindowsSDKDir, WindowsSDKVersion 等环境变量
-          # 我们将在后续步骤中使用这些变量来动态配置 gn
           msvc-version: 'latest'
 
       - name: 1.4 安装系统依赖 (仅 Linux)
@@ -73,7 +71,6 @@ jobs:
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
-          # Skia M118+ 需要 NDK r25+，这里使用 r26b
           ndk-version: r26b
           
       - name: 1.6 设置 depot_tools
@@ -83,7 +80,6 @@ jobs:
           DEPOT_TOOLS_PATH=$(pwd)/depot_tools
           echo "$DEPOT_TOOLS_PATH" >> $GITHUB_PATH
           export PATH="$DEPOT_TOOLS_PATH:$PATH"
-          # 验证 gclient 是否可用
           gclient --version
 
       - name: 1.7 确定 Ninja 作业数
@@ -91,10 +87,8 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            # 在 PowerShell 中获取逻辑处理器数量
             CORE_COUNT=$(powershell -Command "(Get-CimInstance -ClassName Win32_Processor).NumberOfLogicalProcessors")
           else
-            # 在 Linux 中获取核心数
             CORE_COUNT=$(nproc)
           fi
           echo "使用 $CORE_COUNT 个核心进行编译"
@@ -107,7 +101,6 @@ jobs:
         shell: bash
         run: |
           echo "正在删除旧的 Skia 工具可执行文件以强制重新同步..."
-          # 这是从您成功的本地脚本中借鉴的关键步骤，以确保工具总是最新的
           rm -f skia/bin/gn skia/bin/ninja skia/bin/clang-format
           rm -f skia/bin/gn.exe skia/bin/ninja.exe skia/bin/clang-format.exe
 
@@ -123,80 +116,71 @@ jobs:
           NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
         shell: pwsh
         run: |
-          # --- 定义基础 gn 参数 (与您的本地脚本匹配) ---
-          $baseArgs = @'
-          is_official_build = true
-          is_debug = false
-          is_trivial_abi = false
-          skia_use_freetype = true
-          skia_use_harfbuzz = true
-          skia_pdf_subset_harfbuzz = true
-          skia_enable_skottie = true
-          skia_enable_svg = true
-          skia_enable_ganesh = true
-          skia_enable_graphite = true
-          skia_use_dawn = true
-          skia_use_system_expat = false
-          skia_use_system_icu = false
-          skia_use_system_libjpeg_turbo = false
-          skia_use_system_libpng = false
-          skia_use_system_libwebp = false
-          skia_use_system_zlib = false
-          skia_use_system_freetype2 = false
-          skia_use_system_harfbuzz = false
-          use_allocator_shim = false
-          extra_cflags_cc = [ "-std=c++20", "-D_USE_MATH_DEFINES" ]
-          '@
+          # --- 定义基础 gn 参数 (使用字符串拼接) ---
+          $baseArgs = "is_official_build = true`n" +
+                      "is_debug = false`n" +
+                      "is_trivial_abi = false`n" +
+                      "skia_use_freetype = true`n" +
+                      "skia_use_harfbuzz = true`n" +
+                      "skia_pdf_subset_harfbuzz = true`n" +
+                      "skia_enable_skottie = true`n" +
+                      "skia_enable_svg = true`n" +
+                      "skia_enable_ganesh = true`n" +
+                      "skia_enable_graphite = true`n" +
+                      "skia_use_dawn = true`n" +
+                      "skia_use_system_expat = false`n" +
+                      "skia_use_system_icu = false`n" +
+                      "skia_use_system_libjpeg_turbo = false`n" +
+                      "skia_use_system_libpng = false`n" +
+                      "skia_use_system_libwebp = false`n" +
+                      "skia_use_system_zlib = false`n" +
+                      "skia_use_system_freetype2 = false`n" +
+                      "skia_use_system_harfbuzz = false`n" +
+                      "use_allocator_shim = false`n" +
+                      "extra_cflags_cc = [ `" -std=c++20`", `" -D_USE_MATH_DEFINES`" ]`n"
 
           # --- 平台特定参数 ---
           $platformArgs = ""
           if ($env:TARGET -eq 'Windows') {
-              # 从 setup-msvc action 设置的环境变量动态获取路径
               $clangWinPath = "$($env:VCToolsInstallDir)/../Llvm/x64".Replace('\', '/')
               $winVcPath = "$($env:VCToolsInstallDir)/..".Replace('\', '/')
               $winSdkPath = "$($env:WindowsSDKDir)".Replace('\', '/')
               $winSdkVersion = $env:WindowsSDKVersion
           
-              $platformArgs = @"
-          target_os = "win"
-          target_cpu = "x64"
-          cc = "clang"
-          cxx = "clang++"
-          clang_win = "$clangWinPath"
-          win_vc = "$winVcPath"
-          win_sdk = "$winSdkPath"
-          win_sdk_version = "$winSdkVersion"
-          extra_cflags_c = [ "/MD" ]
-          extra_cflags_cc += [ "/MD" ] # 追加到基础定义中
-          extra_ldflags = [ "/OPT:ICF", "/OPT:REF" ]
-          dawn_enable_d3d11 = true
-          dawn_enable_d3d12 = true
-          dawn_enable_vulkan = true
-          "@
+              $platformArgs = "target_os = `"win`"`n" +
+                              "target_cpu = `"x64`"`n" +
+                              "cc = `"clang`"`n" +
+                              "cxx = `"clang++`"`n" +
+                              "clang_win = `"$clangWinPath`"`n" +
+                              "win_vc = `"$winVcPath`"`n" +
+                              "win_sdk = `"$winSdkPath`"`n" +
+                              "win_sdk_version = `"$winSdkVersion`"`n" +
+                              "extra_cflags_c = [ `"/MD`" ]`n" +
+                              "extra_cflags_cc += [ `"/MD`" ]`n" +
+                              "extra_ldflags = [ `"/OPT:ICF`", `"/OPT:REF`" ]`n" +
+                              "dawn_enable_d3d11 = true`n" +
+                              "dawn_enable_d3d12 = true`n" +
+                              "dawn_enable_vulkan = true`n"
           } elseif ($env:TARGET -eq 'Linux') {
-              $platformArgs = @"
-          target_os = "linux"
-          target_cpu = "x64"
-          cc = "clang"
-          cxx = "clang++"
-          extra_cflags_cc += [ "-fno-exceptions" ]
-          dawn_enable_vulkan = true
-          dawn_enable_opengles = true
-          "@
+              $platformArgs = "target_os = `"linux`"`n" +
+                              "target_cpu = `"x64`"`n" +
+                              "cc = `"clang`"`n" +
+                              "cxx = `"clang++`"`n" +
+                              "extra_cflags_cc += [ `"-fno-exceptions`" ]`n" +
+                              "dawn_enable_vulkan = true`n" +
+                              "dawn_enable_opengles = true`n"
           } elseif ($env:TARGET -eq 'Android') {
               $ndkPathForGn = $env:NDK_PATH.Replace('\', '/')
-              $platformArgs = @"
-          target_os = "android"
-          target_cpu = "$($env:ARCH)"
-          ndk = "$ndkPathForGn"
-          ndk_api = 21
-          extra_cflags_cc += [ "-fno-exceptions" ]
-          dawn_enable_vulkan = true
-          dawn_enable_opengles = true
-          "@
+              $platformArgs = "target_os = `"android`"`n" +
+                              "target_cpu = `"$($env:ARCH)`"`n" +
+                              "ndk = `"$ndkPathForGn`"`n" +
+                              "ndk_api = 21`n" +
+                              "extra_cflags_cc += [ `"-fno-exceptions`" ]`n" +
+                              "dawn_enable_vulkan = true`n" +
+                              "dawn_enable_opengles = true`n"
           }
           
-          $finalArgs = $baseArgs + "`n" + $platformArgs
+          $finalArgs = $baseArgs + $platformArgs
           
           # --- 写入 args.gn 文件 ---
           $buildDir = "skia/out/$($env:OUTPUT_DIR_NAME)"
@@ -208,7 +192,6 @@ jobs:
           Get-Content $argsFile
           Write-Host "---------------------------"
           
-          # --- 生成构建文件 ---
           & gn gen $buildDir
 
       - name: 2.4 编译 Skia (ninja)
@@ -229,179 +212,159 @@ jobs:
           $BuildOutputDir = Join-Path $SkiaRoot "out/$($env:OUTPUT_DIR_NAME)"
           $DestinationDir = Join-Path $SourceDir "skia-sdk"
 
-          if (Test-Path $DestinationDir) {
-              Remove-Item -Recurse -Force $DestinationDir
-          }
+          if (Test-Path $DestinationDir) { Remove-Item -Recurse -Force $DestinationDir }
           $SDKIncludeDir = Join-Path $DestinationDir "include"
           $SDKLibDir = Join-Path $DestinationDir "lib"
           $SDKBinDir = Join-Path $DestinationDir "bin"
           $SDKLicenseDir = Join-Path $DestinationDir "LICENSES"
           New-Item -ItemType Directory -Path $SDKIncludeDir, $SDKLibDir, $SDKBinDir, $SDKLicenseDir | Out-Null
 
-          # --- 1. 拷贝头文件 ---
+          # --- 1. 拷贝文件 (逻辑不变) ---
           Write-Host "正在拷贝头文件..."
-          # 确保目标路径存在的情况下进行拷贝，以维持正确的目录结构
           Copy-Item -Path (Join-Path $SkiaRoot "include") -Destination $SDKIncludeDir -Recurse -Force
           Copy-Item -Path (Join-Path $SkiaRoot "modules") -Destination $SDKIncludeDir -Recurse -Force
           $dawnIncludeSource = Join-Path $SkiaRoot "third_party/externals/dawn/include"
-          if (Test-Path $dawnIncludeSource) {
-            Copy-Item -Path $dawnIncludeSource -Destination (Join-Path $SDKIncludeDir "third_party/externals/dawn") -Recurse -Force
-          }
+          if (Test-Path $dawnIncludeSource) { Copy-Item -Path $dawnIncludeSource -Destination (Join-Path $SDKIncludeDir "third_party/externals/dawn") -Recurse -Force }
           $genDawnInclude = Join-Path $BuildOutputDir "gen/third_party/externals/dawn/include"
           if (Test-Path $genDawnInclude) {
-              # 创建目标父目录
               $destParent = "gen/third_party/externals/dawn"
               New-Item -ItemType Directory -Path (Join-Path $SDKIncludeDir $destParent) -Force | Out-Null
               Copy-Item -Path $genDawnInclude -Destination (Join-Path $SDKIncludeDir $destParent) -Recurse -Force
           }
-
-          # --- 2. 拷贝库文件和二进制文件 ---
           Write-Host "正在拷贝库文件和二进制文件..."
           if ($env:TARGET -eq "Windows") {
               Get-ChildItem -Path $BuildOutputDir -Filter "*.lib" | Copy-Item -Destination $SDKLibDir
               Get-ChildItem -Path $BuildOutputDir -Filter "*.dll" | Copy-Item -Destination $SDKBinDir
-          } else { # Linux 和 Android
+          } else {
               Get-ChildItem -Path $BuildOutputDir -Filter "*.a" | Copy-Item -Destination $SDKLibDir
               Get-ChildItem -Path $BuildOutputDir -Filter "*.so" | Copy-Item -Destination $SDKBinDir
           }
-          $icuDataFile = Join-Path $BuildOutputDir "icudtl.dat"
-          if (Test-Path $icuDataFile) {
-              Copy-Item -Path $icuDataFile -Destination $SDKBinDir -Force
-          }
-
-          # --- 3. 拷贝许可证文件 ---
+          if (Test-Path (Join-Path $BuildOutputDir "icudtl.dat")) { Copy-Item -Path (Join-Path $BuildOutputDir "icudtl.dat") -Destination $SDKBinDir -Force }
           Write-Host "正在拷贝许可证文件..."
           Get-ChildItem -Path $SkiaRoot -Recurse -Include "LICENSE*", "COPYING*" | ForEach-Object {
-              $DestFile = Join-Path $SDKLicenseDir "$($_.Directory.Name)-$($_.Name)"
-              Copy-Item -Path $_.FullName -Destination $DestFile -Force
+              Copy-Item -Path $_.FullName -Destination (Join-Path $SDKLicenseDir "$($_.Directory.Name)-$($_.Name)") -Force
           }
 
-          # --- 4. 生成 SkiaConfig.cmake (使用您脚本中的正确内容) ---
+          # --- 2. 生成 SkiaConfig.cmake (使用字符串拼接) ---
           Write-Host "正在生成 SkiaConfig.cmake..."
           $CmakeConfigFile = Join-Path $DestinationDir "SkiaConfig.cmake"
           $CmakeContent = ""
           switch ($env:TARGET) {
               'Windows' {
-                  $CmakeContent = @'
-# Skia SDK CMake配置文件 (为Windows生成)
-get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
-set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")
-set(Skia_LIBRARY_DIR "${Skia_SELF_DIR}/lib")
-if (NOT TARGET Skia::Skia)
-    add_library(Skia::Skia INTERFACE IMPORTED)
-    target_include_directories(Skia::Skia INTERFACE
-        "${Skia_INCLUDE_DIR}"
-        "${Skia_INCLUDE_DIR}/modules"
-        "${Skia_INCLUDE_DIR}/third_party/externals/dawn/include"
-        "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include"
-    )
-    target_link_libraries(Skia::Skia INTERFACE
-        "${Skia_LIBRARY_DIR}/skia.lib"
-        "${Skia_LIBRARY_DIR}/pathkit.lib"
-        "${Skia_LIBRARY_DIR}/skresources.lib"
-        "${Skia_LIBRARY_DIR}/skottie.lib"
-        "${Skia_LIBRARY_DIR}/svg.lib"
-        "${Skia_LIBRARY_DIR}/freetype2.lib"
-        "${Skia_LIBRARY_DIR}/harfbuzz.lib"
-        "${Skia_LIBRARY_DIR}/zlib.lib"
-        "${Skia_LIBRARY_DIR}/dawn_native.dll.lib"
-        "${Skia_LIBRARY_DIR}/dawn_proc.dll.lib"
-        "${Skia_LIBRARY_DIR}/dawn_platform.dll.lib"
-        "${Skia_LIBRARY_DIR}/allocator_core.lib"
-        "${Skia_LIBRARY_DIR}/allocator_base.lib"
-        "${Skia_LIBRARY_DIR}/allocator_shim.lib"
-        "${Skia_LIBRARY_DIR}/raw_ptr.lib"
-        "${Skia_LIBRARY_DIR}/common.lib"
-        d3d11.lib d3d12.lib dxguid.lib onecore.lib
-    )
-    target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES SK_BUILD_FOR_WIN)
-endif()
-'@
+                  $CmakeContent = "# Skia SDK CMake配置文件 (为Windows生成)`n" +
+                                  "get_filename_component(Skia_SELF_DIR `"${CMAKE_CURRENT_LIST_FILE}`" DIRECTORY)`n" +
+                                  "set(Skia_INCLUDE_DIR `"${Skia_SELF_DIR}/include`")`n" +
+                                  "set(Skia_LIBRARY_DIR `"${Skia_SELF_DIR}/lib`")`n" +
+                                  "if (NOT TARGET Skia::Skia)`n" +
+                                  "    add_library(Skia::Skia INTERFACE IMPORTED)`n" +
+                                  "    target_include_directories(Skia::Skia INTERFACE`n" +
+                                  "        `"${Skia_INCLUDE_DIR}`"`n" +
+                                  "        `"${Skia_INCLUDE_DIR}/modules`"`n" +
+                                  "        `"${Skia_INCLUDE_DIR}/third_party/externals/dawn/include`"`n" +
+                                  "        `"${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include`"`n" +
+                                  "    )`n" +
+                                  "    target_link_libraries(Skia::Skia INTERFACE`n" +
+                                  '        "${Skia_LIBRARY_DIR}/skia.lib"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/pathkit.lib"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/skresources.lib"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/skottie.lib"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/svg.lib"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/freetype2.lib"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/harfbuzz.lib"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/zlib.lib"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/dawn_native.dll.lib"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/dawn_proc.dll.lib"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/dawn_platform.dll.lib"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/allocator_core.lib"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/allocator_base.lib"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/allocator_shim.lib"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/raw_ptr.lib"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/common.lib"' + "`n" +
+                                  "        d3d11.lib d3d12.lib dxguid.lib onecore.lib`n" +
+                                  "    )`n" +
+                                  "    target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES SK_BUILD_FOR_WIN)`n" +
+                                  "endif()`n"
               }
               'Linux' {
-                  $CmakeContent = @'
-# Skia SDK CMake配置文件 (为Linux生成)
-get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
-set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")
-set(Skia_LIBRARY_DIR "${Skia_SELF_DIR}/lib")
-if (NOT TARGET Skia::Skia)
-    add_library(Skia::Skia INTERFACE IMPORTED)
-    target_include_directories(Skia::Skia INTERFACE
-            "${Skia_INCLUDE_DIR}"
-            "${Skia_INCLUDE_DIR}/modules"
-            "${Skia_INCLUDE_DIR}/third_party/externals/dawn/include"
-            "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include"
-    )
-    target_link_libraries(Skia::Skia INTERFACE
-            "-Wl,--start-group"
-            "${Skia_LIBRARY_DIR}/libskia.a"
-            "${Skia_LIBRARY_DIR}/libpathkit.a"
-            "${Skia_LIBRARY_DIR}/libskresources.a"
-            "${Skia_LIBRARY_DIR}/libskottie.a"
-            "${Skia_LIBRARY_DIR}/libsvg.a"
-            "${Skia_LIBRARY_DIR}/libfreetype2.a"
-            "${Skia_LIBRARY_DIR}/libharfbuzz.a"
-            "${Skia_LIBRARY_DIR}/libzlib.a"
-            "${Skia_LIBRARY_DIR}/libdawn_native_static.a"
-            "${Skia_LIBRARY_DIR}/libdawn_proc_static.a"
-            "${Skia_LIBRARY_DIR}/libdawn_platform_static.a"
-            "${Skia_LIBRARY_DIR}/liballocator_core.a"
-            "${Skia_LIBRARY_DIR}/liballocator_base.a"
-            "${Skia_LIBRARY_DIR}/liballocator_shim.a"
-            "${Skia_LIBRARY_DIR}/libraw_ptr.a"
-            "${Skia_LIBRARY_DIR}/libcommon.a"
-            "-Wl,--end-group"
-            fontconfig
-            dl
-            pthread
-            EGL
-            GLESv2
-    )
-    target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES)
-endif()
-'@
+                  $CmakeContent = "# Skia SDK CMake配置文件 (为Linux生成)`n" +
+                                  "get_filename_component(Skia_SELF_DIR `"${CMAKE_CURRENT_LIST_FILE}`" DIRECTORY)`n" +
+                                  "set(Skia_INCLUDE_DIR `"${Skia_SELF_DIR}/include`")`n" +
+                                  "set(Skia_LIBRARY_DIR `"${Skia_SELF_DIR}/lib`")`n" +
+                                  "if (NOT TARGET Skia::Skia)`n" +
+                                  "    add_library(Skia::Skia INTERFACE IMPORTED)`n" +
+                                  "    target_include_directories(Skia::Skia INTERFACE`n" +
+                                  "            `"${Skia_INCLUDE_DIR}`"`n" +
+                                  "            `"${Skia_INCLUDE_DIR}/modules`"`n" +
+                                  "            `"${Skia_INCLUDE_DIR}/third_party/externals/dawn/include`"`n" +
+                                  "            `"${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include`"`n" +
+                                  "    )`n" +
+                                  "    target_link_libraries(Skia::Skia INTERFACE`n" +
+                                  '            "-Wl,--start-group"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/libskia.a"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/libpathkit.a"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/libskresources.a"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/libskottie.a"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/libsvg.a"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/libfreetype2.a"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/libharfbuzz.a"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/libzlib.a"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/libdawn_native_static.a"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/libdawn_proc_static.a"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/libdawn_platform_static.a"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/liballocator_core.a"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/liballocator_base.a"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/liballocator_shim.a"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/libraw_ptr.a"' + "`n" +
+                                  '            "${Skia_LIBRARY_DIR}/libcommon.a"' + "`n" +
+                                  '            "-Wl,--end-group"' + "`n" +
+                                  "            fontconfig`n" +
+                                  "            dl`n" +
+                                  "            pthread`n" +
+                                  "            EGL`n" +
+                                  "            GLESv2`n" +
+                                  "    )`n" +
+                                  "    target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES)`n" +
+                                  "endif()`n"
               }
               'Android' {
-                  $CmakeContent = @'
-# Skia SDK CMake配置文件 (为Android生成)
-get_filename_component(Skia_SELF_DIR "${CMAKE_CURRENT_LIST_FILE}" DIRECTORY)
-set(Skia_INCLUDE_DIR "${Skia_SELF_DIR}/include")
-set(Skia_LIBRARY_DIR "${Skia_SELF_DIR}/lib")
-if (NOT TARGET Skia::Skia)
-    add_library(Skia::Skia INTERFACE IMPORTED)
-    target_include_directories(Skia::Skia INTERFACE
-        "${Skia_INCLUDE_DIR}"
-        "${Skia_INCLUDE_DIR}/modules"
-        "${Skia_INCLUDE_DIR}/third_party/externals/dawn/include"
-        "${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include"
-    )
-    target_link_libraries(Skia::Skia INTERFACE
-        "-Wl,--start-group"
-        "${Skia_LIBRARY_DIR}/libskia.a"
-        "${Skia_LIBRARY_DIR}/libpathkit.a"
-        "${Skia_LIBRARY_DIR}/libskresources.a"
-        "${Skia_LIBRARY_DIR}/libskottie.a"
-        "${Skia_LIBRARY_DIR}/libsvg.a"
-        "${Skia_LIBRARY_DIR}/libfreetype2.a"
-        "${Skia_LIBRARY_DIR}/libharfbuzz.a"
-        "${Skia_LIBRARY_DIR}/libzlib.a"
-        "${Skia_LIBRARY_DIR}/libdawn_native_static.a"
-        "${Skia_LIBRARY_DIR}/libdawn_proc_static.a"
-        "${Skia_LIBRARY_DIR}/libdawn_platform_static.a"
-        "${Skia_LIBRARY_DIR}/liballocator_core.a"
-        "${Skia_LIBRARY_DIR}/liballocator_base.a"
-        "${Skia_LIBRARY_DIR}/liballocator_shim.a"
-        "${Skia_LIBRARY_DIR}/libraw_ptr.a"
-        "${Skia_LIBRARY_DIR}/libcommon.a"
-        "-Wl,--end-group"
-        log 
-        android 
-        EGL 
-        GLESv2
-    )
-    target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES)
-endif()
-'@
+                  $CmakeContent = "# Skia SDK CMake配置文件 (为Android生成)`n" +
+                                  "get_filename_component(Skia_SELF_DIR `"${CMAKE_CURRENT_LIST_FILE}`" DIRECTORY)`n" +
+                                  "set(Skia_INCLUDE_DIR `"${Skia_SELF_DIR}/include`")`n" +
+                                  "set(Skia_LIBRARY_DIR `"${Skia_SELF_DIR}/lib`")`n" +
+                                  "if (NOT TARGET Skia::Skia)`n" +
+                                  "    add_library(Skia::Skia INTERFACE IMPORTED)`n" +
+                                  "    target_include_directories(Skia::Skia INTERFACE`n" +
+                                  "        `"${Skia_INCLUDE_DIR}`"`n" +
+                                  "        `"${Skia_INCLUDE_DIR}/modules`"`n" +
+                                  "        `"${Skia_INCLUDE_DIR}/third_party/externals/dawn/include`"`n" +
+                                  "        `"${Skia_INCLUDE_DIR}/gen/third_party/externals/dawn/include`"`n" +
+                                  "    )`n" +
+                                  "    target_link_libraries(Skia::Skia INTERFACE`n" +
+                                  '        "-Wl,--start-group"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/libskia.a"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/libpathkit.a"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/libskresources.a"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/libskottie.a"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/libsvg.a"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/libfreetype2.a"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/libharfbuzz.a"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/libzlib.a"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/libdawn_native_static.a"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/libdawn_proc_static.a"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/libdawn_platform_static.a"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/liballocator_core.a"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/liballocator_base.a"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/liballocator_shim.a"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/libraw_ptr.a"' + "`n" +
+                                  '        "${Skia_LIBRARY_DIR}/libcommon.a"' + "`n" +
+                                  '        "-Wl,--end-group"' + "`n" +
+                                  "        log`n" +
+                                  "        android`n" +
+                                  "        EGL`n" +
+                                  "        GLESv2`n" +
+                                  "    )`n" +
+                                  "    target_compile_definitions(Skia::Skia INTERFACE _USE_MATH_DEFINES)`n" +
+                                  "endif()`n"
               }
           }
           Set-Content -Path $CmakeConfigFile -Value $CmakeContent
