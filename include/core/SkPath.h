@@ -32,12 +32,14 @@ class SkPathRef;
 class SkRRect;
 class SkWStream;
 enum class SkPathConvexity;
-enum class SkPathFirstDirection;
 struct SkPathRaw;
 struct SkPathVerbAnalysis;
 
 // WIP -- define this locally, and fix call-sites to use SkPathBuilder (skbug.com/40040287)
 //#define SK_HIDE_PATH_EDIT_METHODS
+
+// Migrate clients so this is unneeded
+#define SK_LEGACY_PATH_ACCESSORS
 
 /** \class SkPath
     SkPath contain geometry. SkPath may be empty, or contain one or more verbs that
@@ -83,8 +85,12 @@ public:
                       SkSpan<const SkScalar> conics,
                       SkPathFillType, bool isVolatile = false);
 
-    static SkPath Rect(const SkRect&, SkPathDirection = SkPathDirection::kDefault,
+    static SkPath Rect(const SkRect&, SkPathFillType, SkPathDirection = SkPathDirection::kDefault,
                        unsigned startIndex = 0);
+    static SkPath Rect(const SkRect& r, SkPathDirection direction = SkPathDirection::kDefault,
+                       unsigned startIndex = 0) {
+        return Rect(r, SkPathFillType::kDefault, direction, startIndex);
+    }
     static SkPath Oval(const SkRect&, SkPathDirection = SkPathDirection::kDefault);
     static SkPath Oval(const SkRect&, SkPathDirection, unsigned startIndex);
     static SkPath Circle(SkScalar center_x, SkScalar center_y, SkScalar radius,
@@ -112,14 +118,15 @@ public:
                    conics, fillType, isVolatile);
     }
 
-    /** Constructs an empty SkPath. By default, SkPath has no verbs, no SkPoint, and no weights.
-        FillType is set to kWinding.
+    /** Constructs an empty SkPath: no verbs, no points, no conic weights.
 
         @return  empty SkPath
 
         example: https://fiddle.skia.org/c/@Path_empty_constructor
     */
-    SkPath();
+    explicit SkPath(SkPathFillType);
+
+    SkPath() : SkPath(SkPathFillType::kDefault) {}
 
     /** Constructs a copy of an existing path.
         Copy constructor makes two paths identical by value. Internally, path and
@@ -388,54 +395,74 @@ public:
     */
     bool isLine(SkPoint line[2]) const;
 
-    /** Returns the number of points in SkPath.
-        SkPoint count is initially zero.
+    /*
+     *  Return a read-only view into the path's points.
+     */
+    SkSpan<const SkPoint> points() const;
 
-        @return  SkPath SkPoint array length
+    /*
+     *  Return a read-only view into the path's verbs.
+     */
+    SkSpan<const SkPathVerb> verbs() const;
 
-        example: https://fiddle.skia.org/c/@Path_countPoints
+    /*
+     *  Return a read-only view into the path's conic-weights.
+     */
+    SkSpan<const float> conicWeights() const;
+
+    int countPoints() const { return SkToInt(this->points().size()); }
+    int countVerbs() const { return SkToInt(this->verbs().size()); }
+
+    /** Return the last point, or {}
+
+        @return The last if the path contains one or more SkPoint, else returns {}
+
+        example: https://fiddle.skia.org/c/@Path_getLastPt
     */
-    int countPoints() const;
+    std::optional<SkPoint> getLastPt() const;
 
+#ifdef SK_LEGACY_PATH_ACCESSORS
     /** Returns SkPoint at index in SkPoint array. Valid range for index is
         0 to countPoints() - 1.
         Returns (0, 0) if index is out of range.
-
+        DEPRECATED
         @param index  SkPoint array element selector
         @return       SkPoint array value or (0, 0)
-
-        example: https://fiddle.skia.org/c/@Path_getPoint
     */
     SkPoint getPoint(int index) const;
 
     /** Returns number of points in SkPath.
         Copies N points from the path into the span, where N = min(#points, span capacity)
-
+        DEPRECATED
         @param points  span to receive the points. may be empty
         @return the number of points in the path
-
-        example: https://fiddle.skia.org/c/@Path_getPoints
     */
     size_t getPoints(SkSpan<SkPoint> points) const;
 
-    /** Returns the number of verbs: kMove_Verb, kLine_Verb, kQuad_Verb, kConic_Verb,
-        kCubic_Verb, and kClose_Verb; added to SkPath.
-
-        @return  length of verb array
-
-        example: https://fiddle.skia.org/c/@Path_countVerbs
-    */
-    int countVerbs() const;
-
     /** Returns number of points in SkPath.
         Copies N points from the path into the span, where N = min(#points, span capacity)
-
+        DEPRECATED
         @param verbs span to store the verbs. may be empty.
         @return the number of verbs in the path
 
         example: https://fiddle.skia.org/c/@Path_getVerbs
     */
     size_t getVerbs(SkSpan<uint8_t> verbs) const;
+
+    // DEPRECATED
+    bool getLastPt(SkPoint* lastPt) const {
+        if (auto lp = this->getLastPt()) {
+            if (lastPt) {
+                *lastPt = *lp;
+            }
+            return true;
+        }
+        if (lastPt) {
+            *lastPt = {0, 0};
+        }
+        return false;
+    }
+#endif
 
     /** Returns the approximate byte size of the SkPath in memory.
 
@@ -572,17 +599,6 @@ public:
         kExtend_AddPathMode,
     };
 
-    /** Returns SkPath with SkPoint array offset by (dx, dy).
-
-        @param dx  offset added to SkPoint array x-axis coordinates
-        @param dy  offset added to SkPoint array y-axis coordinates
-    */
-    SkPath makeOffset(SkScalar dx, SkScalar dy) const {
-        SkPath dst;
-        this->offset(dx, dy, &dst);
-        return dst;
-    }
-
     /** Return a copy of SkPath with verb array, SkPoint array, and weight transformed
         by matrix. makeTransform may change verbs and increase their number.
 
@@ -590,37 +606,20 @@ public:
         @param pc      whether to apply perspective clipping
         @return        SkPath
     */
-    SkPath makeTransform(const SkMatrix& matrix) const {
-        SkPath dst;
-        this->transform(matrix, &dst);
-        return dst;
+    SkPath makeTransform(const SkMatrix& matrix) const;
+
+    /** Returns SkPath with SkPoint array offset by (dx, dy).
+
+        @param dx  offset added to SkPoint array x-axis coordinates
+        @param dy  offset added to SkPoint array y-axis coordinates
+    */
+    SkPath makeOffset(SkScalar dx, SkScalar dy) const {
+        return this->makeTransform(SkMatrix::Translate(dx, dy));
     }
 
     SkPath makeScale(SkScalar sx, SkScalar sy) const {
         return this->makeTransform(SkMatrix::Scale(sx, sy));
     }
-
-#ifdef SK_SUPPORT_LEGACY_APPLYPERSPECTIVECLIP
-    void transform(const SkMatrix& matrix, SkPath* dst, SkApplyPerspectiveClip) const {
-        this->transform(matrix, dst);
-    }
-    void transform(const SkMatrix& matrix, SkApplyPerspectiveClip) {
-        this->transform(matrix);
-    }
-    SkPath makeTransform(const SkMatrix& m, SkApplyPerspectiveClip) const {
-        return this->makeTransform(m);
-    }
-#endif
-
-    /** Returns last point on SkPath in lastPt. Returns false if SkPoint array is empty,
-        storing (0, 0) if lastPt is not nullptr.
-
-        @param lastPt  storage for final SkPoint in SkPoint array; may be nullptr
-        @return        true if SkPoint array contains one or more SkPoint
-
-        example: https://fiddle.skia.org/c/@Path_getLastPt
-    */
-    bool getLastPt(SkPoint* lastPt) const;
 
     /** \enum SkPath::SegmentMask
         SegmentMask constants correspond to each drawing Verb type in SkPath; for
@@ -719,24 +718,14 @@ public:
         check that ft is legal, values outside of SkPathFillType are not supported.
     */
     void setFillType(SkPathFillType ft) {
-        fFillType = SkToU8(ft);
+        fFillType = ft;
     }
 
     /** Replaces SkPathFillType with its inverse. The inverse of SkPathFillType describes the area
         unmodified by the original SkPathFillType.
     */
     void toggleInverseFillType() {
-        fFillType ^= 2;
-    }
-
-#ifdef SK_HIDE_PATH_EDIT_METHODS
-private:
-#endif
-    /** Returns a copy of this path in the current state, and resets the path to empty. */
-    SkPath detach() {
-        SkPath result = *this;
-        this->reset();
-        return result;
+        fFillType = SkPathFillType_ToggleInverse(fFillType);
     }
 
     /** Sets SkPath to its initial state.
@@ -748,6 +737,14 @@ private:
         example: https://fiddle.skia.org/c/@Path_reset
     */
     SkPath& reset();
+
+#ifndef SK_HIDE_PATH_EDIT_METHODS
+    /** Returns a copy of this path in the current state, and resets the path to empty. */
+    SkPath detach() {
+        SkPath result = *this;
+        this->reset();
+        return result;
+    }
 
     /** Sets SkPath to its initial state, preserving internal storage.
         Removes verb array, SkPoint array, and weights, and sets FillType to kWinding.
@@ -1434,6 +1431,29 @@ private:
     */
     SkPath& reverseAddPath(const SkPath& src);
 
+    /** Sets last point to (x, y). If SkPoint array is empty, append kMove_Verb to
+        verb array and append (x, y) to SkPoint array.
+
+        @param x  set x-axis value of last point
+        @param y  set y-axis value of last point
+
+        example: https://fiddle.skia.org/c/@Path_setLastPt
+    */
+    void setLastPt(SkScalar x, SkScalar y);
+
+    /** Sets the last point on the path. If SkPoint array is empty, append kMove_Verb to
+        verb array and append p to SkPoint array.
+
+        @param p  set value of last point
+    */
+    void setLastPt(const SkPoint& p) {
+        this->setLastPt(p.fX, p.fY);
+    }
+#endif
+
+#ifdef SK_HIDE_PATH_EDIT_METHODS
+private:
+#endif
     /** Offsets SkPoint array by (dx, dy). Offset SkPath replaces dst.
         If dst is nullptr, SkPath is replaced by offset data.
 
@@ -1479,29 +1499,10 @@ private:
         this->transform(matrix, this);
         return *this;
     }
-
-    /** Sets last point to (x, y). If SkPoint array is empty, append kMove_Verb to
-        verb array and append (x, y) to SkPoint array.
-
-        @param x  set x-axis value of last point
-        @param y  set y-axis value of last point
-
-        example: https://fiddle.skia.org/c/@Path_setLastPt
-    */
-    void setLastPt(SkScalar x, SkScalar y);
-
-    /** Sets the last point on the path. If SkPoint array is empty, append kMove_Verb to
-        verb array and append p to SkPoint array.
-
-        @param p  set value of last point
-    */
-    void setLastPt(const SkPoint& p) {
-        this->setLastPt(p.fX, p.fY);
-    }
-
 #ifdef SK_HIDE_PATH_EDIT_METHODS
 public:
 #endif
+
 #ifdef SK_SUPPORT_UNSPANNED_APIS
     static SkPath Make(const SkPoint points[], int pointCount,
                        const uint8_t verbs[], int verbCount,
@@ -1787,16 +1788,18 @@ public:
 
     };
 
-    /** Returns true if the point (x, y) is contained by SkPath, taking into
+    /** Returns true if the point is contained by SkPath, taking into
         account FillType.
 
-        @param x  x-axis value of containment test
-        @param y  y-axis value of containment test
-        @return   true if SkPoint is in SkPath
-
-        example: https://fiddle.skia.org/c/@Path_contains
+        @param point the point to test
+        @return true if SkPoint is in SkPath
     */
-    bool contains(SkScalar x, SkScalar y) const;
+    bool contains(SkPoint point) const;
+
+    // deprecated
+    bool contains(SkScalar x, SkScalar y) const {
+        return this->contains({x, y});
+    }
 
     /** Writes text representation of SkPath to stream. If stream is nullptr, writes to
         standard output. Set dumpAsHex true to generate exact binary representations
@@ -1895,15 +1898,13 @@ public:
     using sk_is_trivially_relocatable = std::true_type;
 
 private:
-    SkPath(sk_sp<SkPathRef>, SkPathFillType, bool isVolatile, SkPathConvexity,
-           SkPathFirstDirection firstDirection);
+    SkPath(sk_sp<SkPathRef>, SkPathFillType, bool isVolatile, SkPathConvexity);
 
-    sk_sp<SkPathRef>               fPathRef;
-    int                            fLastMoveToIndex;
-    mutable std::atomic<uint8_t>   fConvexity;      // SkPathConvexity
-    mutable std::atomic<uint8_t>   fFirstDirection; // SkPathFirstDirection
-    uint8_t                        fFillType    : 2;
-    uint8_t                        fIsVolatile  : 1;
+    sk_sp<SkPathRef>             fPathRef;
+    int                          fLastMoveToIndex;
+    mutable std::atomic<uint8_t> fConvexity;      // SkPathConvexity
+    SkPathFillType               fFillType;
+    bool                         fIsVolatile;
 
     static_assert(::sk_is_trivially_relocatable<decltype(fPathRef)>::value);
 
@@ -1937,9 +1938,11 @@ private:
     //  SkPath path; path.lineTo(...);   <--- need a leading moveTo(0, 0)
     // SkPath path; ... path.close(); path.lineTo(...) <-- need a moveTo(previous moveTo)
     //
-    inline void injectMoveToIfNeeded();
+    void injectMoveToIfNeeded();
 
-    inline bool hasOnlyMoveTos() const;
+    bool hasOnlyMoveTos() const {
+        return this->getSegmentMasks() == 0;
+    }
 
     SkPathConvexity computeConvexity() const;
 
@@ -1971,9 +1974,6 @@ private:
     // Notice the setters are const... these are mutable atomic fields.
     void setConvexity(SkPathConvexity) const;
 
-    void setFirstDirection(SkPathFirstDirection) const;
-    SkPathFirstDirection getFirstDirection() const;
-
     void addRaw(const SkPathRaw&);
 
     /** Returns the comvexity type, computing if needed. Never returns kUnknown.
@@ -1983,9 +1983,6 @@ private:
 
     SkPathConvexity getConvexityOrUnknown() const;
 
-    // Compares the cached value with a freshly computed one (computeConvexity())
-    bool isConvexityAccurate() const;
-
     /** Stores a convexity type for this path. This is what will be returned if
      *  getConvexityOrUnknown() is called. If you pass kUnknown, then if getContexityType()
      *  is called, the real convexity will be computed.
@@ -1993,14 +1990,6 @@ private:
      *  example: https://fiddle.skia.org/c/@Path_setConvexity
      */
     void setConvexity(SkPathConvexity convexity);
-
-    /** Shrinks SkPath verb array and SkPoint array storage to discard unused capacity.
-     *  May reduce the heap overhead for SkPath known to be fully constructed.
-     *
-     *  NOTE: This may relocate the underlying buffers, and thus any Iterators referencing
-     *        this path should be discarded after calling shrinkToFit().
-     */
-    void shrinkToFit();
 
     // Creates a new Path after the supplied arguments have been validated by
     // SkPathPriv::AnalyzeVerbs().
@@ -2011,16 +2000,9 @@ private:
                                SkPathFillType fillType,
                                bool isVolatile);
 
-    friend class SkAutoAddSimpleShape;
-    friend class SkAutoDisableOvalCheck;
+    friend class SkAutoAddSimpleShape;  // setConvexity
     friend class SkPathBuilder;
-    friend class SkPathEdgeIter;
-    friend class SkPathWriter;
-    friend class SkOpBuilder;
-    friend class SkBench_AddPathTest; // perf test reversePathTo
     friend class PathTest_Private; // unit test reversePathTo
-    friend class ForceIsRRect_Private; // unit test isRRect
-    friend class FuzzPath; // for legacy access to validateRef
 };
 
 #endif
