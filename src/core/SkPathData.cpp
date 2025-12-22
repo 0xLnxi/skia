@@ -10,6 +10,7 @@
 #include "include/core/SkSpan.h"
 #include "include/private/base/SkFloatingPoint.h"
 #include "include/private/base/SkMalloc.h"
+#include "include/private/base/SkTo.h"
 #include "src/base/SkSafeMath.h"
 #include "src/core/SkPathData.h"
 #include "src/core/SkPathEnums.h"
@@ -20,6 +21,26 @@
 #include <new>
 #include <optional>
 #include <type_traits>
+
+SkPathData* SkPathData::PeekEmptySingleton() {
+    static SkPathData* gEmpty = SkPathData::MakeNoCheck({}, {}, {}, {}, {}).release();
+    return gEmpty;
+}
+
+static uint32_t next_pathdata_unique_id() {
+    constexpr int kHighBitsToMakeRoomForFillType = 2;
+
+    static std::atomic<int32_t> nextID{1};
+
+    uint32_t id;
+    do {
+        id = nextID.fetch_add(1, std::memory_order_relaxed);
+        // clear the high bits to make room for filltype
+        id <<= kHighBitsToMakeRoomForFillType;
+        id >>= kHighBitsToMakeRoomForFillType;
+    } while (id == 0);
+    return id;
+}
 
 class SkSafeAccumulator {
 public:
@@ -53,30 +74,15 @@ const uint8_t gPtsPerVerb[] = {
     1, 1, 2, 2, 3, 0,  // move, line, quad, conic, cubic, close
 };
 
-static std::pair<size_t, size_t> count_pts_cns(SkSpan<const SkPathVerb> vbs) {
-    size_t pts = 0,
-           cns = 0;
-    for (auto v : vbs) {
-        SkASSERT((unsigned)v < sizeof(gPtsPerVerb));
-        pts += gPtsPerVerb[(unsigned)v];
-        cns += (v == SkPathVerb::kConic);
-    }
-    return {pts, cns};
+static inline bool valid_conic_weight(float w) {
+    return w >= 0 && SkIsFinite(w);
 }
 
-// If it detects a single trailing Move verb, remove it and it's corresponding point.
-// Otherwise return leave the spans unchanged.
-//
-static void trim_trailing_move(SkSpan<const SkPoint>* pts, SkSpan<const SkPathVerb>* vbs) {
-    if (!vbs->empty() && vbs->back() == SkPathVerb::kMove) {
-        *vbs = vbs->first(vbs->size() - 1);
-        *pts = pts->first(pts->size() - 1);
-    }
-}
-
-static bool valid_verbs(SkSpan<const SkPathVerb> vbs) {
-    if (vbs.size() == 0) {
-        return true;
+static bool valid_path_data(SkSpan<const SkPoint> pts,
+                            SkSpan<const SkPathVerb> vbs,
+                            SkSpan<const float> conics) {
+    if (vbs.empty()) {
+        return pts.empty() && conics.empty();
     }
 
     // We must begin with a Move (unless we're empty)
@@ -84,6 +90,8 @@ static bool valid_verbs(SkSpan<const SkPathVerb> vbs) {
         return false;
     }
     SkPathVerb prev = SkPathVerb::kMove;
+    size_t point_count = 1,
+           conic_count = 0;
 
     // Check that we have a valid sequence.
     for (size_t i = 1; i < vbs.size(); ++i) {
@@ -105,19 +113,24 @@ static bool valid_verbs(SkSpan<const SkPathVerb> vbs) {
         if (prev == SkPathVerb::kClose && curr != SkPathVerb::kMove) {
             return false;
         }
+
+        point_count += gPtsPerVerb[SkToSizeT(curr)];
+        conic_count += (curr == SkPathVerb::kConic);
+
         prev = curr;
     }
 
-    // A trailing Move is also illegal, since it creates an empty contour,
-    // which will confuse some of our callers
-    //
-    // See trim_trailing_move() helper, which may be called before calling us.
-    //
-    return vbs.back() != SkPathVerb::kMove;
-}
+    if (pts.size() != point_count || conics.size() != conic_count){
+        return false;
+    }
 
-static inline bool valid_conic_weight(float w) {
-    return w >= 0 && SkIsFinite(w);
+    for (auto w : conics) {
+        if (!valid_conic_weight(w)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 // Handing in debugging, to set a break-point here if you want to know why we
@@ -130,7 +143,8 @@ static void report_pathdata_make_failure(const char reason[]) {
 // This just sets-up the spans to point inside our allocation
 //
 SkPathData::SkPathData(size_t npts, size_t nvbs, size_t ncns)
-    : fConvexity((uint8_t)SkPathConvexity::kUnknown)
+    : fUniqueID(next_pathdata_unique_id())
+    , fConvexity((uint8_t)SkPathConvexity::kUnknown)
     , fType(SkPathIsAType::kGeneral)
 {
     SkASSERT((npts == 0 && nvbs == 0 && ncns == 0) ||
@@ -165,9 +179,25 @@ SkPathData::SkPathData(size_t npts, size_t nvbs, size_t ncns)
     // fBounds is initialized in finishInit()
 }
 
+SkPathData::~SkPathData() {
+    // We will implicitly call our IDChangeList here, notifying them that we are
+    // being dstroyed.
+    SkDEBUGCODE(fUniqueID = 0xEEEEEEEE;)
+}
+
 void SkPathData::operator delete(void* p) {
     ::operator delete(p);
 }
+
+void SkPathData::addGenIDChangeListener(sk_sp<SkIDChangeListener> listener) const {
+    // our empty singleton is never deleted, so we don't want to add any listeners to it.
+    if (this != SkPathData::PeekEmptySingleton()) {
+        // this method on the list is thread-safe
+        fGenIDChangeListeners.add(std::move(listener));
+    }
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////
 
 // NOTE: This only allocates and initializes the span pointers (points, verbs),
 //       it does NOT set the other fields
@@ -204,10 +234,10 @@ bool SkPathData::finishInit(std::optional<SkRect> bounds, std::optional<uint8_t>
     }
 
     if (bounds.has_value()) {
-        fBounds = bounds.value();
+        fBounds = bounds.value().makeSorted();
         SkASSERT(SkIsFinite(&fPoints.data()->fX, fPoints.size() * 2));
     } else {
-        if (auto r = SkRect::Bounds(fPoints)) {
+        if (auto r = SkPathPriv::TrimmedBounds(fPoints, fVerbs)) {
             fBounds = r.value();
         } else {
             report_pathdata_make_failure("non-finite bounds");
@@ -215,6 +245,7 @@ bool SkPathData::finishInit(std::optional<SkRect> bounds, std::optional<uint8_t>
         }
     }
 
+    SkASSERT(fBounds.isSorted());
     return true;
 }
 
@@ -299,8 +330,7 @@ sk_sp<SkPathData> SkPathData::MakeNoCheck(SkSpan<const SkPoint> pts,
                                           SkSpan<const float> conics,
                                           std::optional<SkRect> bounds,
                                           std::optional<unsigned> segmentMask) {
-    trim_trailing_move(&pts, &vbs);
-    SkASSERT(valid_verbs(vbs));
+    SkASSERT(valid_path_data(pts, vbs, conics));
 
     auto path = Alloc(pts.size(), vbs.size(), conics.size());
 
@@ -316,8 +346,7 @@ sk_sp<SkPathData> SkPathData::MakeNoCheck(const SkPathRaw& raw) {
 }
 
 sk_sp<SkPathData> SkPathData::Empty() {
-    static SkPathData* gEmpty = MakeNoCheck({}, {}, {}, {}, {}).release();
-    return sk_ref_sp(gEmpty);
+    return sk_ref_sp(PeekEmptySingleton());
 }
 
 void SkPathData::setupIsA(SkPathIsAType type, SkPathDirection dir, unsigned index) {
@@ -325,6 +354,9 @@ void SkPathData::setupIsA(SkPathIsAType type, SkPathDirection dir, unsigned inde
 
     SkASSERT(type == SkPathIsAType::kOval || type == SkPathIsAType::kRRect);
     fType = type;
+
+    SkASSERT((type == SkPathIsAType::kOval && index < 4) ||
+             (type == SkPathIsAType::kRRect && index < 8));
 
     fIsA.fDirection  = dir;
     fIsA.fStartIndex = SkTo<uint8_t>(index);
@@ -435,7 +467,7 @@ std::optional<std::array<SkPoint, 2>> SkPathData::asLine() const {
 }
 
 std::optional<SkPathRectInfo> SkPathData::asRect() const {
-    if (auto rc = SkPathPriv::IsRectContour(fPoints, fVerbs, false)) {
+    if (auto rc = SkPathPriv::IsRectContour(fPoints, fVerbs, fSegmentMask, false)) {
         SkASSERT(rc->fRect == fBounds);
         return {{
             fBounds,
@@ -477,33 +509,9 @@ bool SkPathData::contains(SkPoint p, SkPathFillType ft) const {
 sk_sp<SkPathData> SkPathData::Make(SkSpan<const SkPoint> pts,
                                    SkSpan<const SkPathVerb> vbs,
                                    SkSpan<const float> conics) {
-    trim_trailing_move(&pts, &vbs);
-    if (!valid_verbs(vbs)) {
-        report_pathdata_make_failure("invalid verb sequence");
+    if (!valid_path_data(pts, vbs, conics)) {
+        report_pathdata_make_failure("invalid path data");
         return nullptr;
-    }
-
-    auto [npts, ncns] = count_pts_cns(vbs);
-    if (pts.size() != npts || conics.size() != ncns) {
-        report_pathdata_make_failure("unexpected # points or conics");
-        return nullptr;
-    }
-
-    // Now we can check for a dangling kMove verb, and just ignore it
-    if (!vbs.empty() && vbs.back() == SkPathVerb::kMove) {
-        SkASSERT(!pts.empty());
-        vbs = vbs.first(vbs.size() - 1);
-        pts = pts.first(pts.size() - 1);
-    }
-    if (vbs.empty()) {
-        return Empty();
-    }
-
-    for (auto w : conics) {
-        if (!valid_conic_weight(w)) {
-            report_pathdata_make_failure("non-finite conics");
-            return nullptr;
-        }
     }
 
     // MakeNoCheck *does* compute/check bounds if we don't pass them in

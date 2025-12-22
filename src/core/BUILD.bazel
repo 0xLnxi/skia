@@ -358,6 +358,9 @@ skia_filegroup(
         "SkPath.cpp",
         "SkPathData.cpp",
         "SkPath_editing.cpp",
+        "SkPath_interpolate.cpp",
+        "SkPath_pathdata.cpp",
+        "SkPath_pathref.cpp",
         "SkPathBuilder.cpp",
         "SkPathDump.cpp",
         "SkPathEffect.cpp",
@@ -503,10 +506,6 @@ skia_cc_library(
         "//include/utils:core_hdrs",
     ],
     features = ["layering_check"],
-    local_defines = [
-        "SK_DISABLE_LEGACY_PNG_WRITEBUFFER",
-        "SK_DISABLE_LEGACY_IMAGE_READBUFFER",
-    ],
     textual_hdrs = [
         "//src/opts:textual_hdrs",
         ":textual_hdrs",
@@ -533,6 +532,7 @@ skia_cc_library(
     features = ["layering_check"],
     visibility = [
         "//bench:__subpackages__",
+        "//experimental:__subpackages__",
         "//gm:__subpackages__",
         "//modules:__subpackages__",
         "//src:__subpackages__",

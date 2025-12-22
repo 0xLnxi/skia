@@ -132,13 +132,8 @@ static constexpr inline size_t VertexAttribTypeSize(VertexAttribType type) {
 }
 
 enum class UniformSlot {
-    // TODO: Want this?
-    // Meant for uniforms that change rarely to never over the course of a render pass
-    // kStatic,
-    // Meant for uniforms that are defined and used by the RenderStep portion of the pipeline shader
-    kRenderStep,
-    // Meant for uniforms that are defined and used by the paint parameters (ie SkPaint subset)
-    kPaint,
+    // Slot for paints and render step uniforms
+    kCombinedUniforms,
     // Meant for gradient storage buffer.
     kGradient
 };
@@ -188,7 +183,7 @@ enum class DstUsage : uint8_t {
 };
 SK_MAKE_BITMASK_OPS(DstUsage)
 
-enum class RenderStateFlags : unsigned {
+enum class RenderStateFlags : uint8_t {
     kNone                   = 0b0000,
     kFixed                  = 0b0001,   // Uses explicit DrawWriter::draw functions
     kAppendVertices         = 0b0010,   // Appends vertices

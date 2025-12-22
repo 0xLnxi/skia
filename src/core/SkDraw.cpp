@@ -138,28 +138,28 @@ static void bw_pt_hair_proc(const PtProcRec& rec, SkSpan<const SkPoint> devPts,
 
 static void bw_line_hair_proc(const PtProcRec& rec, SkSpan<const SkPoint> devPts,
                               SkBlitter* blitter) {
-    for (size_t i = 0; i < devPts.size(); i += 2) {
-        SkScan::HairLine(&devPts[i], 2, *rec.fRC, blitter);
+    for (size_t i = 0; i+1 < devPts.size(); i += 2) {
+        SkScan::HairLine({&devPts[i], 2}, *rec.fRC, blitter);
     }
 }
 
 static void bw_poly_hair_proc(const PtProcRec& rec, SkSpan<const SkPoint> devPts,
                               SkBlitter* blitter) {
-    SkScan::HairLine(devPts.data(), SkToInt(devPts.size()), *rec.fRC, blitter);
+    SkScan::HairLine(devPts, *rec.fRC, blitter);
 }
 
 // aa versions
 
 static void aa_line_hair_proc(const PtProcRec& rec, SkSpan<const SkPoint> devPts,
                               SkBlitter* blitter) {
-    for (size_t i = 0; i < devPts.size(); i += 2) {
-        SkScan::AntiHairLine(&devPts[i], 2, *rec.fRC, blitter);
+    for (size_t i = 0; i+1 < devPts.size(); i += 2) {
+        SkScan::AntiHairLine({&devPts[i], 2}, *rec.fRC, blitter);
     }
 }
 
 static void aa_poly_hair_proc(const PtProcRec& rec, SkSpan<const SkPoint> devPts,
                               SkBlitter* blitter) {
-    SkScan::AntiHairLine(devPts.data(), SkToInt(devPts.size()), *rec.fRC, blitter);
+    SkScan::AntiHairLine(devPts, *rec.fRC, blitter);
 }
 
 // square procs (strokeWidth > 0 but matrix is square-scale (sx == sy)
@@ -315,7 +315,7 @@ void Draw::drawPoints(SkCanvas::PointMode mode,
         auto count = points.size();
         auto pts = points.data();
         do {
-            int n = SkToInt(count);
+            size_t n = count;
             if (n > MAX_DEV_PTS) {
                 n = MAX_DEV_PTS;
             }
@@ -325,7 +325,7 @@ void Draw::drawPoints(SkCanvas::PointMode mode,
             }
             proc(rec, {devPts, n}, bltr);
             pts += n - backup;
-            SkASSERT(SkToInt(count) >= n);
+            SkASSERT(count >= n);
             count -= n;
             if (count > 0) {
                 count += backup;
@@ -1023,11 +1023,14 @@ void Draw::drawPath(const SkPath& origSrcPath,
             cullRectPtr = &cullRect;
         }
 
-        SkPath prePathStorage;
+        std::optional<SkPath> prePathStorage;
         const SkPath* pathPtr = &origSrcPath;
         if (prePathMatrix) {
-            prePathStorage = pathPtr->makeTransform(*prePathMatrix);
-            pathPtr = &prePathStorage;
+            prePathStorage = pathPtr->tryMakeTransform(*prePathMatrix);
+            if (!prePathStorage.has_value()) {
+                return;
+            }
+            pathPtr = &prePathStorage.value();
         }
         doFill = skpathutils::FillPathWithPaint(*pathPtr, *paint, &builder, cullRectPtr, *fCTM);
         builder.transform(*fCTM);
@@ -1055,7 +1058,7 @@ void Draw::drawPath(const SkPath& origSrcPath,
     }
 
 #if defined(SK_BUILD_FOR_FUZZER)
-    if (raw.points().size() > 1000) {
+    if (raw->points().size() > 1000) {
         return;
     }
 #endif

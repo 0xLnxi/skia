@@ -995,7 +995,7 @@ DEF_TEST(SkPathBuilder_rMoveTo, reporter) {
 
     p.moveTo(10, 11);
     p.lineTo(20, 21);
-    p.rMoveTo({30, 31});
+    p.rMoveTo(30, 31);
     p.lineTo(30, 40);
     iter = p.iter();    //(p.points(), p.verbs(), {} /* no conics */);
     check_move(reporter, &iter, 10, 11);
@@ -1093,4 +1093,18 @@ DEF_TEST(SkPathBuilder_dump, reporter) {
         ".lineTo(3, 4)\n";
 
     REPORTER_ASSERT(reporter, str.equals(expected));
+}
+
+DEF_TEST(SkPathBuilder_b_463584612, reporter) {
+    SkPathBuilder b;
+    b.setLastPt(0, 0);
+    b.close()
+     .rMoveTo(1, 1);
+
+    SkPathBuilder builder;
+    builder.addPath(b.snapshot(), SkMatrix::I(), SkPath::kExtend_AddPathMode);
+    builder.rMoveTo(3, 4);  // This crashed
+
+    SkPath p = builder.detach();
+    REPORTER_ASSERT(reporter, !p.isEmpty());
 }

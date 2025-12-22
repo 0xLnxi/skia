@@ -77,8 +77,10 @@ declare_args() {
   # Currently only supported in Android framework
   skia_android_framework_use_perfetto = false
   skia_use_piex = !is_win && !is_wasm
+  skia_use_rust_icc = false
   skia_use_rust_png_decode = false
   skia_use_rust_png_encode = false
+  skia_use_rust_bmp_decode = false
   skia_use_sfml = false
   skia_use_webgl = is_wasm
   skia_use_webgpu = is_wasm
@@ -117,10 +119,8 @@ declare_args() {
   }
 
   skia_use_vulkan = false
-
-  skia_build_fuzzers =
-      is_clang && is_linux && target_cpu == "x64" && !skia_use_dawn
-  skia_use_libfuzzer_defaults = true
+  skia_build_fuzzers = false
+  skia_provide_default_fuzz_engine = true
 }
 
 declare_args() {

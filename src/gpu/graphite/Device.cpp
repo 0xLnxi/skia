@@ -44,6 +44,7 @@
 #include "include/private/base/SkTo.h"
 #include "src/base/SkArenaAlloc.h"
 #include "src/base/SkVx.h"
+#include "src/core/SkBlendModePriv.h"
 #include "src/core/SkBlenderBase.h"
 #include "src/core/SkImageFilterTypes.h"  // IWYU pragma: keep
 #include "src/core/SkImagePriv.h"
@@ -145,16 +146,16 @@ const SkStrokeRec& DefaultFillStyle() {
 /** If the paint can be reduced to a solid flood-fill, determine the correct color to fill with. */
 std::optional<SkColor4f> extract_paint_color(const PaintParams& paint,
                                              const SkColorInfo& dstColorInfo) {
-    std::optional<SkBlendMode> bm = paint.finalBlendMode();
+    SkBlendMode bm = paint.finalBlendMode();
     // Since we don't depend on the dst, a dst-out blend mode implies source is
     // opaque, which causes dst-out to behave like clear.
     if (bm == SkBlendMode::kClear || bm == SkBlendMode::kDstOut) {
         return SkColors::kTransparent;
     }
 
-    // PaintParams has already consolidated constant shaders and applied color filters to constant
-    // input colors. If the paint still has any of those fields, then we can't extract it.
-    if (paint.shader() || paint.colorFilter()) {
+    // PaintParams has already consolidated constant shaders or images and applied color filters to
+    // constant input colors. If the paint still has any of those fields, then we can't extract it.
+    if (paint.shader() || paint.imageShader() || paint.colorFilter()) {
         return std::nullopt;
     }
 
@@ -323,28 +324,32 @@ bool is_simple_shape(const Shape& shape, const Transform& localToDevice, SkStrok
     return false;
 }
 
-bool use_compute_atlas_when_available(PathRendererStrategy strategy) {
-    return strategy == PathRendererStrategy::kComputeAnalyticAA ||
-           strategy == PathRendererStrategy::kComputeMSAA16 ||
-           strategy == PathRendererStrategy::kComputeMSAA8 ||
-           strategy == PathRendererStrategy::kDefault;
-}
-
-class AutoResetForDraw {
+class ScopedDrawBuilder {
 public:
-    explicit AutoResetForDraw(PipelineDataGatherer* gatherer) : fDataGatherer(gatherer) {}
-
-    ~AutoResetForDraw() {
-        if (fDataGatherer) {
-            fDataGatherer->resetForDraw();
-        }
+    explicit ScopedDrawBuilder(Recorder* recorder)
+            : fRecorder(recorder),
+              fKeyAndDataBuilder(fRecorder->priv().popOrCreateKeyAndDataBuilder()) {
+        SkASSERT(fKeyAndDataBuilder);
+        SkDEBUGCODE(this->gatherer()->checkReset());
+        SkDEBUGCODE(this->builder()->checkReset());
     }
 
-    AutoResetForDraw(const AutoResetForDraw&) = delete;
-    AutoResetForDraw& operator=(const AutoResetForDraw&) = delete;
+    ~ScopedDrawBuilder() {
+        SkASSERT(fKeyAndDataBuilder && fRecorder);
+        // The PipelineDataGatherer must be reset before being returned to the pool for reuse.
+        this->gatherer()->resetForDraw();
+        fRecorder->priv().pushKeyAndDataBuilder(std::move(fKeyAndDataBuilder));
+    }
+
+    PipelineDataGatherer* gatherer() { return &fKeyAndDataBuilder->first; }
+    PaintParamsKeyBuilder* builder() { return &fKeyAndDataBuilder->second; }
+
+    ScopedDrawBuilder(const ScopedDrawBuilder&) = delete;
+    ScopedDrawBuilder& operator=(const ScopedDrawBuilder&) = delete;
 
 private:
-    PipelineDataGatherer* fDataGatherer;
+    Recorder* fRecorder;
+    std::unique_ptr<KeyAndDataBuilder> fKeyAndDataBuilder;
 };
 
 } // anonymous namespace
@@ -438,8 +443,30 @@ sk_sp<Device> Device::Make(Recorder* recorder,
                            const SkSurfaceProps& props,
                            LoadOp initialLoadOp,
                            bool registerWithRecorder) {
-    if (!recorder) {
+    if (!recorder || !target) {
         return nullptr;
+    }
+
+    // DrawContext::Make ensures `target` can be rendered into, but if the path strategy might
+    // require MSAA, then we need to make sure a multisampled attachment can also be created later.
+    // - This would also apply for compute renderers that have to write directly to `target`, but
+    //   the current versions of compute render into separate compute-compatible textures instead.
+    const Caps* caps = recorder->priv().caps();
+    switch (recorder->priv().rendererProvider()->pathRendererStrategy()) {
+        case PathRendererStrategy::kTessellationAndSmallAtlas:
+            [[fallthrough]];
+        case PathRendererStrategy::kTessellation:
+            if (caps->getCompatibleMSAASampleCount(target->textureInfo()) <= SampleCount::k1) {
+                return nullptr;
+            }
+            break;
+
+        case PathRendererStrategy::kRasterAtlas:
+        case PathRendererStrategy::kComputeAnalyticAA:
+        case PathRendererStrategy::kComputeMSAA16:
+        case PathRendererStrategy::kComputeMSAA8:
+            // No additional support required
+            break;
     }
 
     sk_sp<DrawContext> dc = DrawContext::Make(recorder->priv().caps(),
@@ -493,26 +520,6 @@ Device::Device(Recorder* recorder, sk_sp<DrawContext> dc)
         , fSubRunControl(recorder->priv().caps()->getSubRunControl(
                 fDC->surfaceProps().isUseDeviceIndependentFonts())) {
     SkASSERT(SkToBool(fDC) && SkToBool(fRecorder));
-    if (fDC->target()->textureInfo().numSamples() > 1) {
-        // Target is inherently multisampled
-        fMSAASupported = true;
-    } else if (fRecorder->priv().caps()->defaultMSAASamplesCount() > 1) {
-        if (fRecorder->priv().caps()->msaaRenderToSingleSampledSupport()) {
-            // Backend-managed MSAA is supported
-            fMSAASupported = true;
-        } else {
-            // Graphite-managed MSAA is supported
-            fMSAASupported = fRecorder->priv().caps()->isSampleCountSupported(
-                    TextureInfoPriv::ViewFormat(fDC->target()->textureInfo()),
-                    fRecorder->priv().caps()->defaultMSAASamplesCount());
-        }
-    }
-
-    const bool useStorageBuffers = fRecorder->priv().caps()->storageBufferSupport();
-    const auto& bindingReq = fRecorder->priv().caps()->resourceBindingRequirements();
-    fDataGatherer = std::make_unique<PipelineDataGatherer>(
-            useStorageBuffers ? bindingReq.fStorageBufferLayout : bindingReq.fUniformBufferLayout);
-    fKeyBuilder = std::make_unique<PaintParamsKeyBuilder>(fRecorder->priv().shaderCodeDictionary());
 }
 
 Device::~Device() {
@@ -891,9 +898,8 @@ void Device::drawPaint(const SkPaint& paint) {
 
     this->drawGeometry(this->localToDeviceTransform(),
                        Geometry(inverseFill),
-                       paint,
-                       DefaultFillStyle(),
-                       DrawFlags::kIgnorePathEffect);
+                       PaintParams(paint),
+                       DefaultFillStyle());
 }
 
 void Device::drawRect(const SkRect& r, const SkPaint& paint) {
@@ -912,18 +918,26 @@ void Device::drawRect(const SkRect& r, const SkPaint& paint) {
             style.setStrokeStyle(strokeWidth, strokeAndFill);
         }
     }
-    this->drawGeometry(this->localToDeviceTransform(), Geometry(Shape(rectToDraw)), paint, style);
+    this->drawGeometryWithPathEffect(this->localToDeviceTransform(),
+                                     Geometry(Shape(rectToDraw)),
+                                     PaintParams(paint),
+                                     style,
+                                     paint.getPathEffect());
 }
 
 void Device::drawVertices(const SkVertices* vertices, sk_sp<SkBlender> blender,
                           const SkPaint& paint, bool skipColorXform)  {
+    // A null blender is normally equivalent to SrcOver; coerce it to non-null so that nullity
+    // can be used by PaintParamsKeyBuilder to know when to add primitive blending blocks.
+    // Use null for the primitive blender if `vertices` does not have per-vertex colors.
+    const SkBlender* primitiveBlender =
+            !vertices->priv().hasColors() ? nullptr :
+                                  blender ? blender.get()
+                                          : GetBlendModeSingleton(SkBlendMode::kSrcOver);
     this->drawGeometry(this->localToDeviceTransform(),
                        Geometry(sk_ref_sp(vertices)),
-                       paint,
-                       DefaultFillStyle(),
-                       DrawFlags::kIgnorePathEffect,
-                       std::move(blender),
-                       skipColorXform);
+                       PaintParams(paint, primitiveBlender, skipColorXform),
+                       DefaultFillStyle());
 }
 
 bool Device::drawAsTiledImageRect(SkCanvas* canvas,
@@ -985,8 +999,11 @@ void Device::drawOval(const SkRect& oval, const SkPaint& paint) {
     if (paint.getPathEffect()) {
         // Dashing requires that the oval path starts on the right side and travels clockwise. This
         // is the default for the SkPath::Oval constructor, as used by SkBitmapDevice.
-        this->drawGeometry(this->localToDeviceTransform(), Geometry(Shape(SkPath::Oval(oval))),
-                           paint, SkStrokeRec(paint));
+        this->drawGeometryWithPathEffect(this->localToDeviceTransform(),
+                                         Geometry(Shape(SkPath::Oval(oval))),
+                                         PaintParams(paint),
+                                         SkStrokeRec(paint),
+                                         paint.getPathEffect());
     } else {
         // TODO: This has wasted effort from the SkCanvas level since it instead converts rrects
         // that happen to be ovals into this, only for us to go right back to rrect.
@@ -1007,8 +1024,11 @@ void Device::drawArc(const SkArc& arc, const SkPaint& paint) {
           !arc.isWedge()))) {
         this->drawRRect(SkRRect::MakeOval(arc.oval()), paint);
     } else {
-        this->drawGeometry(this->localToDeviceTransform(), Geometry(Shape(arc)),
-                           paint, SkStrokeRec(paint));
+        this->drawGeometryWithPathEffect(this->localToDeviceTransform(),
+                                         Geometry(Shape(arc)),
+                                         PaintParams(paint),
+                                         SkStrokeRec(paint),
+                                         paint.getPathEffect());
     }
 }
 
@@ -1038,7 +1058,11 @@ void Device::drawRRect(const SkRRect& rr, const SkPaint& paint) {
         rrectToDraw.setRRect(snappedRRect);
     }
 
-    this->drawGeometry(this->localToDeviceTransform(), Geometry(rrectToDraw), paint, style);
+    this->drawGeometryWithPathEffect(this->localToDeviceTransform(),
+                                     Geometry(rrectToDraw),
+                                     PaintParams(paint),
+                                     style,
+                                     paint.getPathEffect());
 }
 
 void Device::drawDRRect(const SkRRect& outer, const SkRRect& inner, const SkPaint& paint) {
@@ -1213,8 +1237,13 @@ void Device::drawPath(const SkPath& path, const SkPaint& paint) {
             }
         }
     }
-    this->drawGeometry(this->localToDeviceTransform(), Geometry(Shape(path)),
-                       paint, SkStrokeRec(paint));
+
+    // Full path rendering required
+    this->drawGeometryWithPathEffect(this->localToDeviceTransform(),
+                                     Geometry(Shape(path)),
+                                     PaintParams(paint),
+                                     SkStrokeRec(paint),
+                                     paint.getPathEffect());
 }
 
 void Device::drawPoints(SkCanvas::PointMode mode, SkSpan<const SkPoint> points,
@@ -1240,11 +1269,14 @@ void Device::drawPoints(SkCanvas::PointMode mode, SkSpan<const SkPoint> points,
         count--;
     }
 
+    const PaintParams paintParams(paint);
     size_t inc = mode == SkCanvas::kLines_PointMode ? 2 : 1;
     for (size_t i = 0; i < count; i += inc) {
-        this->drawGeometry(this->localToDeviceTransform(),
-                           Geometry(Shape(points[i], points[i + next])),
-                           paint, stroke);
+        this->drawGeometryWithPathEffect(this->localToDeviceTransform(),
+                                         Geometry(Shape(points[i], points[i + next])),
+                                         paintParams,
+                                         stroke,
+                                         paint.getPathEffect());
     }
 }
 
@@ -1253,20 +1285,15 @@ void Device::drawEdgeAAQuad(const SkRect& rect,
                             SkCanvas::QuadAAFlags aaFlags,
                             const SkColor4f& color,
                             SkBlendMode mode) {
-    SkPaint solidColorPaint;
-    solidColorPaint.setColor4f(color, /*colorSpace=*/nullptr);
-    solidColorPaint.setBlendMode(mode);
-
     // NOTE: We do not snap edge AA quads that are fully non-AA because we need their edges to seam
     // with quads that have mixed edge flags (so both need to match the GPU rasterization, not our
     // CPU rounding).
-    auto flags = SkEnumBitMask<EdgeAAQuad::Flags>(static_cast<EdgeAAQuad::Flags>(aaFlags));
+    SkEnumBitMask<EdgeAAQuad::Flags> flags = static_cast<EdgeAAQuad::Flags>(aaFlags);
     EdgeAAQuad quad = clip ? EdgeAAQuad(clip, flags) : EdgeAAQuad(rect, flags);
     this->drawGeometry(this->localToDeviceTransform(),
                        Geometry(quad),
-                       solidColorPaint,
-                       DefaultFillStyle(),
-                       DrawFlags::kIgnorePathEffect);
+                       PaintParams(color, mode),
+                       DefaultFillStyle());
 }
 
 void Device::drawEdgeAAImageSet(const SkCanvas::ImageSetEntry set[], int count,
@@ -1275,7 +1302,8 @@ void Device::drawEdgeAAImageSet(const SkCanvas::ImageSetEntry set[], int count,
                                 SkCanvas::SrcRectConstraint constraint) {
     SkASSERT(count > 0);
 
-    SkPaint paintWithShader(paint);
+    const Transform& localToDevice = this->localToDeviceTransform();
+    // SkPaint paintWithShader(paint);
     int dstClipIndex = 0;
     for (int i = 0; i < count; ++i) {
         // If the entry is clipped by 'dstClips', that must be provided
@@ -1283,49 +1311,48 @@ void Device::drawEdgeAAImageSet(const SkCanvas::ImageSetEntry set[], int count,
         // Similarly, if it has an extra transform, those must be provided
         SkASSERT(set[i].fMatrixIndex < 0 || preViewMatrices);
 
-        auto [ imageToDraw, newSampling ] =
-                skgpu::graphite::GetGraphiteBacked(this->recorder(), set[i].fImage.get(), sampling);
-        if (!imageToDraw) {
-            SKGPU_LOG_W("Device::drawImageRect: Creation of Graphite-backed image failed");
-            return;
+        // See SkModifyPaintAndDstForDrawImageRect, as this behavior is consistent but avoids
+        // allocating SkShader objects or having to modify the SkPaint.
+        // Adjust `dst` such that it only samples from the portion of fSrcRect that overlaps with
+        // the image bounds. This "decal" effect is applied geometrically to what is drawn so that
+        // actual texture tiling can be clamped to the src rect.
+        const SkRect imageBounds = SkRect::Make(set[i].fImage->bounds());
+        SkRect dstToDraw = set[i].fDstRect;
+        SkRect subset = set[i].fSrcRect;
+        SkMatrix localMatrix = SkMatrix::RectToRectOrIdentity(subset, dstToDraw);
+        if (!imageBounds.contains(subset)) {
+            if (subset.intersect(imageBounds)) {
+                // Update dst to match the smaller src
+                dstToDraw = localMatrix.mapRect(subset);
+            } else {
+                dstToDraw.setEmpty();
+            }
+        }
+        if (dstToDraw.isEmpty()) {
+            continue; // Nothing to draw for this set entry
         }
 
-        // TODO: Produce an image shading paint key and data directly without having to reconstruct
-        // the equivalent SkPaint for each entry. Reuse the key and data between entries if possible
-        paintWithShader.setShader(paint.refShader());
-        paintWithShader.setAlphaf(paint.getAlphaf() * set[i].fAlpha);
-        SkRect dst = SkModifyPaintAndDstForDrawImageRect(
-                    imageToDraw.get(), newSampling, set[i].fSrcRect, set[i].fDstRect,
-                    constraint == SkCanvas::kStrict_SrcRectConstraint,
-                    &paintWithShader);
-        if (dst.isEmpty()) {
-            return;
-        }
+        PaintParams::SimpleImage imageShader{set[i].fImage.get(),
+                                             &localMatrix,
+                                             constraint == SkCanvas::kStrict_SrcRectConstraint ?
+                                                    subset : imageBounds,
+                                             sampling};
 
         // NOTE: See drawEdgeAAQuad for details, we do not snap non-AA quads.
-        auto flags =
-                SkEnumBitMask<EdgeAAQuad::Flags>(static_cast<EdgeAAQuad::Flags>(set[i].fAAFlags));
+        SkEnumBitMask<EdgeAAQuad::Flags> flags = static_cast<EdgeAAQuad::Flags>(set[i].fAAFlags);
         EdgeAAQuad quad = set[i].fHasClip ? EdgeAAQuad(dstClips + dstClipIndex, flags)
-                                          : EdgeAAQuad(dst, flags);
+                                          : EdgeAAQuad(dstToDraw, flags);
 
         // TODO: Calling drawGeometry() for each entry re-evaluates the clip stack every time, which
         // is consistent with Ganesh's behavior. It also matches the behavior if edge-AA images were
         // submitted one at a time by SkiaRenderer (a nice client simplification). However, we
         // should explore the performance trade off with doing one bulk evaluation for the whole set
-        if (set[i].fMatrixIndex < 0) {
-            this->drawGeometry(this->localToDeviceTransform(),
-                               Geometry(quad),
-                               paintWithShader,
-                               DefaultFillStyle(),
-                               DrawFlags::kIgnorePathEffect);
-        } else {
-            SkM44 xtraTransform(preViewMatrices[set[i].fMatrixIndex]);
-            this->drawGeometry(this->localToDeviceTransform().concat(xtraTransform),
-                               Geometry(quad),
-                               paintWithShader,
-                               DefaultFillStyle(),
-                               DrawFlags::kIgnorePathEffect);
-        }
+        const SkMatrix* xtraXform = set[i].fMatrixIndex < 0 ? nullptr
+                                                            : &preViewMatrices[set[i].fMatrixIndex];
+        this->drawGeometry(xtraXform ?  localToDevice.concat(SkM44(*xtraXform)) : localToDevice,
+                           Geometry(quad),
+                           PaintParams(paint, imageShader, set[i].fAlpha),
+                           DefaultFillStyle());
 
         dstClipIndex += 4 * set[i].fHasClip;
     }
@@ -1378,6 +1405,21 @@ void Device::drawAtlasSubRun(const sktext::gpu::AtlasSubRun* subRun,
                              sktext::gpu::RendererData rendererData) {
     ASSERT_SINGLE_OWNER
 
+    // For color emoji, the shading behaves similarly to how drawImageRects override the shader
+    // via a SimpleImage. However, for text, the "image" is coming from the atlas and RenderStep as
+    // a primitive color and is combined with the paint color using the primitive blender, so we
+    // construct the PaintParams to explicitly ignore the paint's set shader. For regular and LCD
+    // text, the mask image provides coverage so there is no primitive blender.
+    const SkBlender* primitiveBlender = subRun->maskFormat() == MaskFormat::kARGB ?
+            GetBlendModeSingleton(SkBlendMode::kDstIn) : nullptr;
+    const PaintParams paintParams(paint,
+                                  primitiveBlender,
+                                  /*skipColorXform=*/false,
+                                  /*ignoreShader=*/SkToBool(primitiveBlender));
+    const bool useGammaCorrectDistanceTable = this->imageInfo().colorSpace() &&
+                                              this->imageInfo().colorSpace()->gammaIsLinear();
+    const Transform& localToDevice = this->localToDeviceTransform();
+
     const int subRunEnd = subRun->glyphCount();
     auto regenerateDelegate = [&](sktext::gpu::GlyphVector* glyphs,
                                   int begin,
@@ -1395,33 +1437,24 @@ void Device::drawAtlasSubRun(const sktext::gpu::AtlasSubRun* subRun,
             return;
         }
         if (glyphsRegenerated) {
-            auto [bounds, localToDevice] = subRun->vertexFiller().boundsAndDeviceMatrix(
-                                                   this->localToDeviceTransform(), drawOrigin);
-            SkPaint subRunPaint = paint;
-            // For color emoji, shaders don't affect the final color
-            if (subRun->maskFormat() == skgpu::MaskFormat::kARGB) {
-                subRunPaint.setShader(nullptr);
-            }
+            auto [bounds, maskToDevice] =
+                    subRun->vertexFiller().boundsAndDeviceMatrix(localToDevice, drawOrigin);
 
-            bool useGammaCorrectDistanceTable =
-                    this->imageInfo().colorSpace() &&
-                    this->imageInfo().colorSpace()->gammaIsLinear();
-            this->drawGeometry(localToDevice,
+
+            this->drawGeometry(maskToDevice,
                                Geometry(SubRunData(subRun,
                                                    subRunStorage,
                                                    bounds,
-                                                   this->localToDeviceTransform().inverse(),
+                                                   localToDevice.inverse(),
                                                    subRunCursor,
                                                    glyphsRegenerated,
-                                                   SkPaintPriv::ComputeLuminanceColor(subRunPaint),
+                                                   SkPaintPriv::ComputeLuminanceColor(paint),
                                                    useGammaCorrectDistanceTable,
                                                    this->surfaceProps().pixelGeometry(),
                                                    fRecorder,
                                                    rendererData)),
-                               subRunPaint,
-                               DefaultFillStyle(),
-                               DrawFlags::kIgnorePathEffect,
-                               SkBlender::Mode(SkBlendMode::kDstIn));
+                               paintParams,
+                               DefaultFillStyle());
         }
         subRunCursor += glyphsRegenerated;
 
@@ -1436,24 +1469,14 @@ void Device::drawAtlasSubRun(const sktext::gpu::AtlasSubRun* subRun,
     }
 }
 
-void Device::drawGeometry(const Transform& localToDevice,
-                          Geometry&& geometry,
-                          const SkPaint& paint,
-                          const SkStrokeRec& style,
-                          SkEnumBitMask<DrawFlags> flags,
-                          sk_sp<SkBlender> primitiveBlender,
-                          bool skipColorXform) {
-    ASSERT_SINGLE_OWNER
-    AutoResetForDraw autoReset(fDataGatherer.get());
-    if (!localToDevice.valid()) {
-        // If the transform is not invertible or not finite then drawing isn't well defined.
-        SKGPU_LOG_W("Skipping draw with non-invertible/non-finite transform.");
-        return;
-    }
-
-    // Heavy weight paint options like path effects, mask filters, and stroke-and-fill style are
-    // applied on the CPU by generating a new shape and recursing on drawGeometry with updated flags
-    if (!(flags & DrawFlags::kIgnorePathEffect) && paint.getPathEffect()) {
+void Device::drawGeometryWithPathEffect(const Transform& localToDevice,
+                                        Geometry&& geometry,
+                                        const PaintParams& paint,
+                                        SkStrokeRec style,
+                                        const SkPathEffect* pathEffect) {
+    // Path effects are applied on the CPU, which may modify the geometry to draw.
+    // TODO(b/238757903): Handle dashing on the GPU when possible (e.g. straight lines)
+    if (pathEffect && localToDevice.valid()) {
         // Apply the path effect before anything else, which if we are applying here, means that we
         // are dealing with a Shape. drawVertices (and a SkVertices geometry) should pass in
         // kIgnorePathEffect per SkCanvas spec. Text geometry also should pass in kIgnorePathEffect
@@ -1462,7 +1485,6 @@ void Device::drawGeometry(const Transform& localToDevice,
 
         // TODO: If asADash() returns true and the base path matches the dashing fast path, then
         // that should be detected now as well. Maybe add dashPath to Device so canvas can handle it
-        SkStrokeRec newStyle = style;
         float maxScaleFactor = localToDevice.maxScaleFactor();
         if (localToDevice.type() == Transform::Type::kPerspective) {
             auto bounds = geometry.bounds();
@@ -1472,24 +1494,34 @@ void Device::drawGeometry(const Transform& localToDevice,
             float bl = std::get<1>(localToDevice.scaleFactors({bounds.left(), bounds.bot()}));
             maxScaleFactor = std::max(std::max(tl, tr), std::max(bl, br));
         }
-        newStyle.setResScale(maxScaleFactor);
+
+        style.setResScale(maxScaleFactor);
         SkPathBuilder builder;
-        if (paint.getPathEffect()->filterPath(&builder, geometry.shape().asPath(), &newStyle,
-                                              nullptr, localToDevice)) {
+        if (pathEffect->filterPath(&builder, geometry.shape().asPath(),
+                                   &style, nullptr, localToDevice)) {
             SkPath dst = builder.detach();
             dst.setIsVolatile(true);
-            // Recurse using the path and new style, while disabling downstream path effect handling
-            this->drawGeometry(localToDevice, Geometry(Shape(dst)), paint, newStyle,
-                               flags | DrawFlags::kIgnorePathEffect, std::move(primitiveBlender),
-                               skipColorXform);
-            return;
+            geometry.setShape(Shape(dst));
         } else {
             SKGPU_LOG_W("Path effect failed to apply, drawing original path.");
-            this->drawGeometry(localToDevice, std::move(geometry), paint, style,
-                               flags | DrawFlags::kIgnorePathEffect, std::move(primitiveBlender),
-                               skipColorXform);
-            return;
         }
+
+        // Fallthrough, remaining code assumes the effect has been applied to `geometry` and `style`
+    }
+
+    this->drawGeometry(localToDevice, std::move(geometry), paint, style);
+}
+
+void Device::drawGeometry(const Transform& localToDevice,
+                          Geometry&& geometry,
+                          const PaintParams& paint,
+                          SkStrokeRec style) {
+    ASSERT_SINGLE_OWNER
+
+    if (!localToDevice.valid()) {
+        // If the transform is not invertible or not finite then drawing isn't well defined.
+        SKGPU_LOG_W("Skipping draw with non-invertible/non-finite transform.");
+        return;
     }
 
     // TODO: The tessellating and atlas path renderers haven't implemented perspective yet, so
@@ -1499,19 +1531,13 @@ void Device::drawGeometry(const Transform& localToDevice,
         !is_simple_shape(geometry.shape(), localToDevice, style.getStyle())) {
         SkPath devicePath = geometry.shape().asPath().makeTransform(localToDevice.matrix().asM33());
         devicePath.setIsVolatile(true);
-        this->drawGeometry(Transform::Identity(), Geometry(Shape(devicePath)), paint, style, flags,
-                           std::move(primitiveBlender), skipColorXform);
+        // TODO(b/452415460): This fallback breaks perspective interpolation for local coords and
+        // it causes strokes to render in device space.
+        this->drawGeometry(Transform::Identity(), Geometry(Shape(devicePath)), paint, style);
         return;
     }
 
-    // TODO: Manually snap pixels for rects, rrects, and lines if paint is non-AA (ideally also
-    // consider snapping stroke width and/or adjusting geometry for hairlines). This pixel snapping
-    // math should be consistent with how non-AA clip [r]rects are handled.
-
-    // If we got here, then path effects should have been handled and the style should be fill or
-    // stroke/hairline. Stroke-and-fill is not handled by DrawContext, but is emulated here by
-    // drawing twice--one stroke and one fill--using the same depth value.
-    SkASSERT(!SkToBool(paint.getPathEffect()) || (flags & DrawFlags::kIgnorePathEffect));
+    ScopedDrawBuilder scopedDrawBuilder(fRecorder);
 
     // Calculate the clipped bounds of the draw and determine the clip elements that affect the
     // draw without updating the clip stack.
@@ -1519,23 +1545,21 @@ void Device::drawGeometry(const Transform& localToDevice,
     Clip clip = fClip.visitClipStackForDraw(localToDevice,
                                             &geometry,
                                             style,
-                                            fMSAASupported,
                                             &clipElements);
     if (clip.isClippedOut()) {
         // Clipped out, so don't record anything.
         return;
     }
 
-    // We assume that we will receive a renderer, or a PathAtlas. If it's a PathAtlas,
-    // then we assume that the renderer chosen in PathAtlas::addShape() will have
-    // single-channel coverage, require AA bounds outsetting, and have a single renderStep.
-    // The clip's draw bounds are passed in for heuristics, so it's fine if it doesn't include the
-    // AA outsetting we add for some analytic coverage renderers.
+    // We assume that we will receive a renderer, or a PathAtlas. If it's a PathAtlas, then we
+    // assume that the renderer chosen in PathAtlas::addShape() will have single-channel coverage,
+    // require AA bounds outsetting, and have a single renderStep. The clip's draw bounds are passed
+    // in for heuristics, so it's fine if it doesn't include the AA outsetting we add for some
+    // analytic coverage renderers.
     auto [renderer, pathAtlas] = this->chooseRenderer(localToDevice,
                                                       geometry,
                                                       style,
-                                                      clip.transformedShapeBounds(),
-                                                      /*requireMSAA=*/false);
+                                                      clip.transformedShapeBounds());
     if (!renderer && !pathAtlas) {
         SKGPU_LOG_W("Skipping draw with no supported renderer or PathAtlas.");
         return;
@@ -1549,23 +1573,16 @@ void Device::drawGeometry(const Transform& localToDevice,
         clip.outsetBoundsForAA();
     }
 
-    if (!renderer || !renderer->emitsPrimitiveColor()) {
-        // Ignore primitive blender if the renderer doesn't support it
-        primitiveBlender = nullptr;
-    } else if (!SkToBool(primitiveBlender)) {
-        // A null blender is normally equivalent to SrcOver; coerce it to non-null so that nullity
-        // can be used by PaintParamsKeyBuilder to know when to add primitive blending blocks.
-        primitiveBlender = SkBlender::Mode(SkBlendMode::kSrcOver);
-    }
+    // A renderer that emits a primitive color should only be used by a drawX() call that sets a
+    // non-null primitive blender.
+    SkASSERT(SkToBool(paint.primitiveBlender()) == (renderer && renderer->emitsPrimitiveColor()));
 
-    PaintParams shading{fRecorder->priv().caps(),
-                        paint,
-                        std::move(primitiveBlender),
-                        clip.nonMSAAClip(),
-                        sk_ref_sp(clip.shader()),
-                        renderer ? renderer->coverage() : Coverage::kSingleChannel,
-                        TextureInfoPriv::ViewFormat(fDC->target()->textureInfo()),
-                        skipColorXform};
+    ShadingParams shading{fRecorder->priv().caps(),
+                          paint,
+                          clip.nonMSAAClip(),
+                          clip.shader(),
+                          renderer ? renderer->coverage() : Coverage::kSingleChannel,
+                          TextureInfoPriv::ViewFormat(fDC->target()->textureInfo())};
 
     // Some shapes and styles combine multiple draws so the total render step count is split between
     // the main renderer and possibly a secondaryRenderer. As we can't be sure whether a secondary
@@ -1610,25 +1627,21 @@ void Device::drawGeometry(const Transform& localToDevice,
     // a flush of the Recorder.
     KeyContext keyContext{fRecorder,
                           fDC.get(),
-                          fRecorder->priv().refFloatStorageManager().get(),
-                          fKeyBuilder.get(),
-                          fDataGatherer.get(),
+                          fRecorder->priv().floatStorageManager(),
+                          scopedDrawBuilder.builder(),
+                          scopedDrawBuilder.gatherer(),
                           localToDevice.matrix(),
                           fDC->colorInfo(),
                           geometry.isShape() || geometry.isEdgeAAQuad()
                                 ? KeyGenFlags::kDefault
                                 : KeyGenFlags::kDisableSamplingOptimization,
-                          paint.getColor4f()};
-    SkDEBUGCODE(fDataGatherer->checkReset());
-    SkDEBUGCODE(fKeyBuilder->checkReset());
-
+                          paint.color()};
     auto keyResult = shading.toKey(keyContext);
     if (!keyResult) {
         // Converting the SkPaint to a pipeline and set of uniform values + sampled textures failed.
         SKGPU_LOG_W("Key context creation failed in Device::drawGeometry, draw dropped!");
         return;
     }
-
     auto [paintID, dstUsage] = *keyResult;
 
     // If we are unclipped, do not depend on the dst, and cover the target, then we can adjust
@@ -1642,7 +1655,7 @@ void Device::drawGeometry(const Transform& localToDevice,
                                      clipElements.empty() &&
                                      clip.scissor().contains(this->bounds());
     if (overwritesAllPixels) {
-        if (std::optional<SkColor4f> color = extract_paint_color(shading, fDC->colorInfo())) {
+        if (std::optional<SkColor4f> color = extract_paint_color(paint, fDC->colorInfo())) {
             // Fullscreen clear, so nothing has to be rendered at all
             fDC->clear(*color);
             return;
@@ -1653,7 +1666,7 @@ void Device::drawGeometry(const Transform& localToDevice,
             // discarded dst can still be accessed. For non-floating point formats, that is fine,
             // but float formats can have NaNs after a discard that cause blending to fail. To
             // avoid that scenario, we clear to a known value instead.
-            if (shading.finalBlendMode() == SkBlendMode::kSrcOver &&
+            if (paint.finalBlendMode() == SkBlendMode::kSrcOver &&
                 TextureFormatIsFloatingPoint(
                         TextureInfoPriv::ViewFormat(fDC->target()->textureInfo()))) {
                 fDC->clear(SkColors::kMagenta); // This color doesn't matter
@@ -1767,11 +1780,9 @@ void Device::drawGeometry(const Transform& localToDevice,
         SkASSERT(atlasMask.has_value());
         auto [mask, origin] = *atlasMask;
         fDC->recordDraw(renderer, Transform::Translate(origin.fX, origin.fY), Geometry(mask), clip,
-                        order, paintID, dstUsage, fDataGatherer.get(), nullptr);
+                        order, paintID, dstUsage, scopedDrawBuilder.gatherer(), nullptr);
     } else {
-        if (styleType == SkStrokeRec::kStroke_Style ||
-            styleType == SkStrokeRec::kHairline_Style ||
-            styleType == SkStrokeRec::kStrokeAndFill_Style) {
+        if (styleType != SkStrokeRec::kFill_Style) {
             // For stroke-and-fill, 'renderer' is used for the fill and we always use the
             // TessellatedStrokes renderer; for stroke and hairline, 'renderer' is used.
             StrokeStyle stroke(style.getWidth(), style.getMiter(), style.getJoin(), style.getCap());
@@ -1779,18 +1790,12 @@ void Device::drawGeometry(const Transform& localToDevice,
                                    ? fRecorder->priv().rendererProvider()->tessellatedStrokes()
                                    : renderer,
                             localToDevice, geometry, clip, order, paintID, dstUsage,
-                            fDataGatherer.get(), &stroke);
-        }
-        if (styleType == SkStrokeRec::kFill_Style ||
-            styleType == SkStrokeRec::kStrokeAndFill_Style) {
+                            scopedDrawBuilder.gatherer(), &stroke);
+        } else if (dstUsage == DstUsage::kNone && renderer->useNonAAInnerFill()){
             // Possibly record an additional draw using the non-AA bounds renderer to fill the
             // interior with a renderer that can disable blending entirely.
-            Rect innerFillBounds = renderer->useNonAAInnerFill() && dstUsage == DstUsage::kNone &&
-                styleType != SkStrokeRec::kStrokeAndFill_Style
-                            ? get_inner_bounds(geometry, localToDevice)
-                            : Rect::InfiniteInverted();
+            Rect innerFillBounds = get_inner_bounds(geometry, localToDevice);
             if (!innerFillBounds.isEmptyNegativeOrNaN()) {
-                SkASSERT(dstUsage == DstUsage::kNone && renderer->useNonAAInnerFill());
                 DrawOrder orderWithoutCoverage{order.depth()};
                 orderWithoutCoverage.dependsOnPaintersOrder(clipOrder);
                 // The regular draw has analytic coverage, so isn't being sorted front to back, but
@@ -1798,13 +1803,17 @@ void Device::drawGeometry(const Transform& localToDevice,
                 orderWithoutCoverage.reverseDepthAsStencil();
                 fDC->recordDraw(fRecorder->priv().rendererProvider()->nonAABounds(), localToDevice,
                                 Geometry(Shape(innerFillBounds)), clip, orderWithoutCoverage,
-                                paintID, dstUsage, fDataGatherer.get(), nullptr);
+                                paintID, dstUsage, scopedDrawBuilder.gatherer(), nullptr);
                 // Force the coverage draw to come after the non-AA draw in order to benefit from
                 // early depth testing.
                 order.dependsOnPaintersOrder(orderWithoutCoverage.paintOrder());
             }
+        }
+
+        if (styleType == SkStrokeRec::kFill_Style ||
+            styleType == SkStrokeRec::kStrokeAndFill_Style) {
             fDC->recordDraw(renderer, localToDevice, geometry, clip, order, paintID, dstUsage,
-                            fDataGatherer.get(), nullptr);
+                            scopedDrawBuilder.gatherer(), nullptr);
         }
     }
 
@@ -1822,16 +1831,16 @@ void Device::drawClipShape(const Transform& localToDevice,
                            const Shape& shape,
                            const Clip& clip,
                            DrawOrder order) {
-    AutoResetForDraw autoReset(fDataGatherer.get());
+    ScopedDrawBuilder scopedDrawBuilder(fRecorder);
 
-    // A clip draw's state is almost fully defined by the ClipStack. The only thing we need
-    // to account for is selecting a Renderer and tracking the stencil buffer usage.
-    Geometry geometry{shape};
-    auto [renderer, pathAtlas] = this->chooseRenderer(localToDevice,
-                                                      geometry,
-                                                      DefaultFillStyle(),
-                                                      clip.transformedShapeBounds(),
-                                                      /*requireMSAA=*/true);
+    // A clip draw's state is almost fully defined by the ClipStack. The only thing we need to
+    // account for is selecting a Renderer and tracking the stencil buffer usage.
+    //
+    // While kRasterAtlas attempts to route clip elements to an atlas, this can fail, in which case
+    // the element may still be rendered into the depth buffer with tessellation (likely w/o AA).
+    auto renderer = this->chooseMSAARenderer(shape,
+                                             DefaultFillStyle(),
+                                             clip.transformedShapeBounds());
     if (!renderer) {
         SKGPU_LOG_W("Skipping clip with no supported path renderer.");
         return;
@@ -1848,19 +1857,18 @@ void Device::drawClipShape(const Transform& localToDevice,
     // Anti-aliased clipping requires the renderer to use MSAA to modify the depth per sample, so
     // analytic coverage renderers cannot be used.
     SkASSERT(renderer->coverage() == Coverage::kNone && renderer->requiresMSAA());
-    SkASSERT(pathAtlas == nullptr);
 
     // Clips draws are depth-only (invalid UniquePaintParamsID), and filled (null StrokeStyle).
     // The data gatherer must be reset so that the DrawList can use it for any RenderStep data.
     if (localToDevice.type() == Transform::Type::kPerspective) {
-        SkPath devicePath = geometry.shape().asPath().makeTransform(localToDevice.matrix().asM33());
+        SkPath devicePath = shape.asPath().makeTransform(localToDevice.matrix().asM33());
         fDC->recordDraw(renderer, Transform::Identity(), Geometry(Shape(devicePath)), clip, order,
-                        UniquePaintParamsID::Invalid(), DstUsage::kNone, fDataGatherer.get(),
-                        /*stroke=*/nullptr);
+                        UniquePaintParamsID::Invalid(), DstUsage::kNone,
+                        scopedDrawBuilder.gatherer(), /*stroke=*/nullptr);
     } else {
-        fDC->recordDraw(renderer, localToDevice, geometry, clip, order,
-                        UniquePaintParamsID::Invalid(), DstUsage::kNone, fDataGatherer.get(),
-                        /*stroke=*/nullptr);
+        fDC->recordDraw(renderer, localToDevice, Geometry(shape), clip, order,
+                        UniquePaintParamsID::Invalid(), DstUsage::kNone,
+                        scopedDrawBuilder.gatherer(), /*stroke=*/nullptr);
     }
     // This ensures that draws recorded after this clip shape has been popped off the stack will
     // be unaffected by the Z value the clip shape wrote to the depth attachment.
@@ -1874,14 +1882,12 @@ void Device::drawClipShape(const Transform& localToDevice,
 std::pair<const Renderer*, PathAtlas*> Device::chooseRenderer(const Transform& localToDevice,
                                                               const Geometry& geometry,
                                                               const SkStrokeRec& style,
-                                                              const Rect& drawBounds,
-                                                              bool requireMSAA) const {
+                                                              const Rect& drawBounds) const {
     const RendererProvider* renderers = fRecorder->priv().rendererProvider();
     SkASSERT(renderers);
     SkStrokeRec::Style type = style.getStyle();
 
     if (geometry.isSubRun()) {
-        SkASSERT(!requireMSAA);
         sktext::gpu::RendererData rendererData = geometry.subRunData().rendererData();
         if (!rendererData.isSDF) {
             return {renderers->bitmapText(rendererData.isLCD, rendererData.maskFormat), nullptr};
@@ -1900,7 +1906,7 @@ std::pair<const Renderer*, PathAtlas*> Device::chooseRenderer(const Transform& l
         // to be rendered into the PathAtlas, in which case the 2nd return value is non-null.
         return {renderers->coverageMask(), nullptr};
     } else if (geometry.isEdgeAAQuad()) {
-        SkASSERT(!requireMSAA && style.isFillStyle());
+        SkASSERT(style.isFillStyle());
         // handled by specialized system, simplified from rects and round rects
         const EdgeAAQuad& quad = geometry.edgeAAQuad();
         if (quad.isRect() && (quad.edgeFlags() == EdgeAAQuad::Flags::kNone
@@ -1924,8 +1930,8 @@ std::pair<const Renderer*, PathAtlas*> Device::chooseRenderer(const Transform& l
     }
 
     const Shape& shape = geometry.shape();
-    // We can't use this renderer if we require MSAA for an effect (i.e. clipping or stroke+fill).
-    if (!requireMSAA && is_simple_shape(shape, localToDevice, type)) {
+    if (is_simple_shape(shape, localToDevice, type)) {
+        SkASSERT(type != SkStrokeRec::kStrokeAndFill_Style); // stroke+fill is *not* simple
         // For pixel-aligned rects, use the the non-AA bounds renderer to avoid triggering any
         // dst-read requirement due to src blending.
         bool pixelAlignedRect = false;
@@ -1941,8 +1947,7 @@ std::pair<const Renderer*, PathAtlas*> Device::chooseRenderer(const Transform& l
         }
     }
 
-    if (!requireMSAA &&
-        shape.isArc() &&
+    if (shape.isArc() &&
         std::abs(shape.arc().sweepAngle()) < 360.f &&
         localToDevice.type() <= Transform::Type::kAffine &&
         SkRRectPriv::IsRelativelyCircular(shape.arc().oval().width(), shape.arc().oval().height(),
@@ -1972,66 +1977,53 @@ std::pair<const Renderer*, PathAtlas*> Device::chooseRenderer(const Transform& l
         }
     }
 
-    // Path rendering options. For now the strategy is very simple and not optimal:
-    // I. Use tessellation if MSAA is required for an effect.
-    // II: otherwise:
-    //    1. Always use compute AA if supported unless it was excluded by ContextOptions or the
-    //       compute renderer cannot render the shape efficiently yet (based on the result of
-    //       `isSuitableForAtlasing`).
-    //    2. Fall back to CPU raster AA if hardware MSAA is disabled or it was explicitly requested
-    //       via ContextOptions (including if the path is small enough).
-    //    3. Otherwise use tessellation.
-#if defined(GPU_TEST_UTILS)
-    PathRendererStrategy strategy = fRecorder->priv().caps()->requestedPathRendererStrategy();
-#else
-    PathRendererStrategy strategy = PathRendererStrategy::kDefault;
-#endif
-
-    PathAtlas* pathAtlas = nullptr;
     AtlasProvider* atlasProvider = fRecorder->priv().atlasProvider();
+    switch (renderers->pathRendererStrategy()) {
+        case PathRendererStrategy::kComputeAnalyticAA:
+        case PathRendererStrategy::kComputeMSAA16:
+        case PathRendererStrategy::kComputeMSAA8: {
+            PathAtlas* atlas = fDC->getComputePathAtlas(fRecorder);
+            SkASSERT(atlas);
 
-    // Prefer compute atlas draws if supported. This currently implicitly filters out clip draws as
-    // they require MSAA. Eventually we may want to route clip shapes to the atlas as well but not
-    // if hardware MSAA is required.
-    if (atlasProvider->isAvailable(AtlasProvider::PathAtlasFlags::kCompute) &&
-        use_compute_atlas_when_available(strategy)) {
-        PathAtlas* atlas = fDC->getComputePathAtlas(fRecorder);
-        SkASSERT(atlas);
+            // Don't use the compute renderer if it can't handle the shape efficiently.
+            if (atlas->isSuitableForAtlasing(drawBounds, fClip.conservativeBounds())) {
+                return {nullptr, atlas};
+            } // else falls back to tessellation
+        } break;
 
-        // Don't use the compute renderer if it can't handle the shape efficiently.
-        if (atlas->isSuitableForAtlasing(drawBounds, fClip.conservativeBounds())) {
-            pathAtlas = atlas;
-        }
-    }
+        case PathRendererStrategy::kTessellationAndSmallAtlas: {
+            static constexpr int kMaxSmallPathAtlasCount = 256;
+            const float minPathSizeForMSAA = fRecorder->priv().caps()->minPathSizeForMSAA();
+            if (fAtlasedPathCount < kMaxSmallPathAtlasCount &&
+                all(drawBounds.size() <= minPathSizeForMSAA)) {
+                // Small paths are rasterized on the CPU for higher quality
+                return {nullptr, atlasProvider->getRasterPathAtlas()};
+            } // else falls back to tessellation
+        } break;
 
-    // Fall back to CPU rendered paths when multisampling is disabled and the compute atlas is not
-    // available.
-    static constexpr int kMaxSmallPathAtlasCount = 256;
-    const float minPathSizeForMSAA = fRecorder->priv().caps()->minPathSizeForMSAA();
-    const bool useRasterAtlasByDefault = !fMSAASupported ||
-                                         (fAtlasedPathCount < kMaxSmallPathAtlasCount &&
-                                          all(drawBounds.size() <= minPathSizeForMSAA));
-    if (!pathAtlas && atlasProvider->isAvailable(AtlasProvider::PathAtlasFlags::kRaster) &&
-        (strategy == PathRendererStrategy::kRasterAA ||
-         (strategy == PathRendererStrategy::kDefault && useRasterAtlasByDefault))) {
-        // NOTE: RasterPathAtlas doesn't implement `PathAtlas::isSuitableForAtlasing` as it doesn't
-        // reject paths (unlike ComputePathAtlas).
-        pathAtlas = atlasProvider->getRasterPathAtlas();
-    }
+        case PathRendererStrategy::kRasterAtlas:
+            // Everything is rasterized on the CPU and packed into the atlas
+            return {nullptr, atlasProvider->getRasterPathAtlas()};
 
-    if (!requireMSAA && pathAtlas) {
-        // If we got here it means that we should draw with an atlas renderer if we can and avoid
-        // resorting to one of the tessellating techniques.
-        return {nullptr, pathAtlas};
+        case PathRendererStrategy::kTessellation:
+            // Never uses an atlas for rendering, leave it null
+            break;
     }
 
     // If we got here, it requires tessellated path rendering or an MSAA technique applied to a
     // simple shape (so we interpret them as paths to reduce the number of pipelines we need).
+    return {this->chooseMSAARenderer(geometry.shape(), style, drawBounds), nullptr};
+}
 
+const Renderer* Device::chooseMSAARenderer(const Shape& shape,
+                                           const SkStrokeRec& style,
+                                           const Rect& drawBounds) const {
     // TODO: All shapes that select a tessellating path renderer need to be "pre-chopped" if they
     // are large enough to exceed the fixed count tessellation limits. Fills are pre-chopped to the
     // viewport bounds, strokes and stroke-and-fills are pre-chopped to the viewport bounds outset
     // by the stroke radius (hence taking the whole style and not just its type).
+    const RendererProvider* renderers = fRecorder->priv().rendererProvider();
+    SkStrokeRec::Style type = style.getStyle();
 
     if (type == SkStrokeRec::kStroke_Style ||
         type == SkStrokeRec::kHairline_Style) {
@@ -2042,7 +2034,7 @@ std::pair<const Renderer*, PathAtlas*> Device::chooseRenderer(const Transform& l
         // stenciling first with the HW stroke tessellator and then covering their bounds, but
         // inverse-filled strokes are not well-specified in our public canvas behavior so we may be
         // able to remove it.
-        return {renderers->tessellatedStrokes(), nullptr};
+        return renderers->tessellatedStrokes();
     }
 
     // 'type' could be kStrokeAndFill, but in that case chooseRenderer() is meant to return the
@@ -2050,7 +2042,7 @@ std::pair<const Renderer*, PathAtlas*> Device::chooseRenderer(const Transform& l
     if (shape.convex() && !shape.inverted()) {
         // TODO: Ganesh doesn't have a curve+middle-out triangles option for convex paths, but it
         // would be pretty trivial to spin up.
-        return {renderers->convexTessellatedWedges(), nullptr};
+        return renderers->convexTessellatedWedges();
     } else {
         const bool preferWedges =
                 // TODO: Combine this heuristic with what is used in PathStencilCoverOp to choose
@@ -2059,9 +2051,9 @@ std::pair<const Renderer*, PathAtlas*> Device::chooseRenderer(const Transform& l
                 drawBounds.area() <= (256 * 256);
 
         if (preferWedges) {
-            return {renderers->stencilTessellatedWedges(shape.fillType()), nullptr};
+            return renderers->stencilTessellatedWedges(shape.fillType());
         } else {
-            return {renderers->stencilTessellatedCurvesAndTris(shape.fillType()), nullptr};
+            return renderers->stencilTessellatedCurvesAndTris(shape.fillType());
         }
     }
 }
@@ -2079,25 +2071,6 @@ void Device::flushPendingWork(DrawContext* drawContext) {
     SkASSERT(fRecorder);
     SkASSERT(fScopedRecordingID == 0 || fScopedRecordingID == fRecorder->priv().nextRecordingID());
 
-    // TODO(b/330864257):  flushPendingWork() can be recursively called if this Device
-    // recorded a picture shader draw and during a flush (triggered by snap or automatically from
-    // reaching limits), the picture shader will be rendered to a new device. If that picture drawn
-    // to the temporary device fills up an atlas it can trigger the global
-    // recorder->flushTrackedDevices(), which will then encounter this device that is already in
-    // the midst of flushing. To avoid crashing we only actually flush the first time this is called
-    // and set a bit to early-out on any recursive calls.
-    // This is not an ideal solution since the temporary Device's flush-the-world may have reset
-    // atlas entries that the current Device's flushed draws will reference. But at this stage it's
-    // not possible to split the already recorded draws into a before-list and an after-list that
-    // can reference the old and new contents of the atlas. While avoiding the crash, this may cause
-    // incorrect accesses to a shared atlas. Once paint data is extracted at draw time, picture
-    // shaders will be resolved outside of flushes and then this will be fixed automatically.
-    if (fIsFlushing) {
-        return;
-    } else {
-        fIsFlushing = true;
-    }
-
     // Ideally we would just check if `drawTask` was non-null and then call flushTrackedDevices()
     // before we appended `drawTask` afterwards. Unfortunately, internalFlush() is not 100% internal
     // because it can record atlas uploads to the DrawContext. If those uploads were moved to
@@ -2110,6 +2083,11 @@ void Device::flushPendingWork(DrawContext* drawContext) {
         fMustFlushDependencies = false;
         fRecorder->priv().flushTrackedDevices(this->target());
     }
+
+    // While unbounded recursion is gone, bounded re-entrant flushing is still possible during
+    // dependency resolution. We assert *after* the dependency flush to permit this valid re-entry.
+    SkASSERT(!fIsFlushing);
+    SkDEBUGCODE(fIsFlushing = true;)
 
     this->internalFlush();
     sk_sp<Task> drawTask = fDC->snapDrawTask();
@@ -2139,7 +2117,7 @@ void Device::flushPendingWork(DrawContext* drawContext) {
         }
     }
 
-    fIsFlushing = false;
+    SkDEBUGCODE(fIsFlushing = false;)
 }
 
 void Device::internalFlush() {
@@ -2190,17 +2168,18 @@ void Device::drawSpecial(SkSpecialImage* special,
         return;
     }
 
-    SkPaint paintWithShader(paint);
-    SkRect dst = SkModifyPaintAndDstForDrawImageRect(
-            img.get(),
-            sampling,
-            /*src=*/SkRect::Make(special->subset()),
-            /*dst=*/SkRect::MakeIWH(special->width(), special->height()),
-            /*strictSrcSubset=*/constraint == SkCanvas::kStrict_SrcRectConstraint,
-            &paintWithShader);
-    if (dst.isEmpty()) {
-        return;
-    }
+    // drawSpecial could be the same as drawEdgeAAImageSet or drawImageRect except that it
+    // ignores the currently assigned local-to-device transform and uses the one provided.
+    // But because SkSpecialImage guarantees the subset is already contained in the image and it's
+    // not empty, we can skip the src/dst correction.
+    SkRect src = SkRect::Make(special->subset());
+    SkRect dst = SkRect::MakeIWH(special->width(), special->height());
+    SkASSERT(img->bounds().contains(src) && !dst.isEmpty());
+
+    SkMatrix localMatrix = *SkMatrix::Rect2Rect(src, dst);
+    SkRect subset = constraint == SkCanvas::kStrict_SrcRectConstraint ?
+            src : SkRect::Make(img->bounds());
+    PaintParams::SimpleImage imageShader{img.get(), &localMatrix, subset, sampling};
 
     // The image filtering and layer code paths often rely on the paint being non-AA to avoid
     // coverage operations. To stay consistent with the other backends, we use an edge AA "quad"
@@ -2209,9 +2188,8 @@ void Device::drawSpecial(SkSpecialImage* special,
                                                     : EdgeAAQuad::Flags::kNone;
     this->drawGeometry(Transform(SkM44(localToDevice)),
                        Geometry(EdgeAAQuad(dst, aaFlags)),
-                       paintWithShader,
-                       DefaultFillStyle(),
-                       DrawFlags::kIgnorePathEffect);
+                       PaintParams(paint, imageShader),
+                       DefaultFillStyle());
 }
 
 void Device::drawCoverageMask(const SkSpecialImage* mask,
@@ -2249,9 +2227,8 @@ void Device::drawCoverageMask(const SkSpecialImage* mask,
 
     this->drawGeometry(Transform(SkM44(localToDevice)),
                        Geometry(maskShape),
-                       paint,
-                       DefaultFillStyle(),
-                       DrawFlags::kIgnorePathEffect);
+                       PaintParams(paint),
+                       DefaultFillStyle());
 }
 
 sk_sp<SkSpecialImage> Device::snapSpecial(const SkIRect& subset, bool forceCopy) {
@@ -2321,12 +2298,8 @@ void Device::drawSlug(SkCanvas* canvas, const sktext::gpu::Slug* slug, const SkP
 }
 
 bool Device::drawBlurredRRect(const SkRRect& rrect, const SkPaint& paint, float deviceSigma) {
-    SkStrokeRec style(paint);
     if (skgpu::BlurIsEffectivelyIdentity(deviceSigma)) {
-        this->drawGeometry(this->localToDeviceTransform(),
-                           Geometry(rrect.isRect() ? Shape(rrect.rect()) : Shape(rrect)),
-                           paint,
-                           style);
+        this->drawRRect(rrect, paint);
         return true;
     }
 
@@ -2336,7 +2309,10 @@ bool Device::drawBlurredRRect(const SkRRect& rrect, const SkPaint& paint, float 
         return false;
     }
 
-    this->drawGeometry(this->localToDeviceTransform(), Geometry(*analyticBlur), paint, style);
+    this->drawGeometry(this->localToDeviceTransform(),
+                       Geometry(*analyticBlur),
+                       PaintParams(paint),
+                       SkStrokeRec(paint));
     return true;
 }
 
